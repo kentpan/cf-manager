@@ -1,6 +1,9 @@
 import { Hono } from 'hono';
 import type { Env } from '../types';
 import { getSetting, setSetting } from '../db/models';
+import { getAuthHeaders, cfFetch } from '../services/cfApi';
+import { getActiveAccountsByFeature } from '../db/models';
+import type { Account } from '../db/models';
 import { VERSION, GIT_COMMIT } from '../version';
 
 const app = new Hono<{ Bindings: Env }>();
@@ -8,10 +11,13 @@ const app = new Hono<{ Bindings: Env }>();
 /**
  * Aggregate homepage config (mirrors the Node backend's implementation).
  *
- * Stored in app_settings under a single JSON key so the public route can
- * read it without joining multiple tables. The public route (mounted
- * before authMiddleware in index.ts) serves this config + resolved entry
- * URLs so visitors see the portfolio/demo landing page.
+ * Stored in app_settings under a single JSON key. Shape:
+ *   {
+ *     enabled, theme, title, subtitle,
+ *     items: Array<{ account_id, worker_name, type, display_name, sort_order,
+ *                    custom_url?, title?, description?, screenshot? }>,
+ *     image_upload: { enabled, api_url, api_key, auth_code, cdn_host, r2_prefix }
+ *   }
  */
 const AGGREGATE_HOMEPAGE_KEY = 'aggregate_homepage';
 
@@ -22,6 +28,17 @@ interface AggregateHomepageItem {
   display_name: string;
   sort_order: number;
   custom_url?: string;
+  title?: string;
+  description?: string;
+  screenshot?: string;
+}
+interface ImageUploadConfig {
+  enabled: boolean;
+  api_url: string;
+  api_key: string;
+  auth_code: string;
+  cdn_host: string;
+  r2_prefix: string;
 }
 interface AggregateHomepageConfig {
   enabled: boolean;
@@ -29,6 +46,7 @@ interface AggregateHomepageConfig {
   title: string;
   subtitle: string;
   items: AggregateHomepageItem[];
+  image_upload: ImageUploadConfig;
 }
 const DEFAULT_AGGREGATE_CONFIG: AggregateHomepageConfig = {
   enabled: false,
@@ -36,6 +54,14 @@ const DEFAULT_AGGREGATE_CONFIG: AggregateHomepageConfig = {
   title: '作品集',
   subtitle: 'Projects & Demos',
   items: [],
+  image_upload: {
+    enabled: false,
+    api_url: 'https://i.xubaoge.com/upload?authCode={{authCode}}&uploadChannel=cfr2&uploadNameType={{uploadNameType}}&uploadFolder={{uploadFolder}}',
+    api_key: '',
+    auth_code: '',
+    cdn_host: 'https://i.xubaoge.com',
+    r2_prefix: '/cfmgr',
+  },
 };
 
 async function getAggregateConfig(env: Env): Promise<AggregateHomepageConfig> {
@@ -43,12 +69,21 @@ async function getAggregateConfig(env: Env): Promise<AggregateHomepageConfig> {
   if (!raw) return { ...DEFAULT_AGGREGATE_CONFIG };
   try {
     const parsed = JSON.parse(raw);
+    const iu = parsed.image_upload || {};
     return {
       enabled: !!parsed.enabled,
       theme: parsed.theme === 'brutalism' ? 'brutalism' : 'default',
       title: typeof parsed.title === 'string' ? parsed.title : DEFAULT_AGGREGATE_CONFIG.title,
       subtitle: typeof parsed.subtitle === 'string' ? parsed.subtitle : DEFAULT_AGGREGATE_CONFIG.subtitle,
       items: Array.isArray(parsed.items) ? parsed.items : [],
+      image_upload: {
+        enabled: !!iu.enabled,
+        api_url: typeof iu.api_url === 'string' ? iu.api_url : DEFAULT_AGGREGATE_CONFIG.image_upload.api_url,
+        api_key: typeof iu.api_key === 'string' ? iu.api_key : '',
+        auth_code: typeof iu.auth_code === 'string' ? iu.auth_code : '',
+        cdn_host: typeof iu.cdn_host === 'string' ? iu.cdn_host : DEFAULT_AGGREGATE_CONFIG.image_upload.cdn_host,
+        r2_prefix: typeof iu.r2_prefix === 'string' ? iu.r2_prefix : DEFAULT_AGGREGATE_CONFIG.image_upload.r2_prefix,
+      },
     };
   } catch {
     return { ...DEFAULT_AGGREGATE_CONFIG };
@@ -57,6 +92,15 @@ async function getAggregateConfig(env: Env): Promise<AggregateHomepageConfig> {
 
 async function setAggregateConfig(env: Env, cfg: AggregateHomepageConfig): Promise<void> {
   await setSetting(env.DB, AGGREGATE_HOMEPAGE_KEY, JSON.stringify(cfg));
+}
+
+/** Resolve a stored path to a full URL using the configured CDN host. */
+function resolveImageUrl(path: string, cdnHost: string): string {
+  if (!path) return '';
+  if (path.startsWith('http')) return path;
+  if (!cdnHost) return path;
+  const cleanHost = cdnHost.replace(/\/+$/, '');
+  return `${cleanHost}${/^\//.test(path) ? path : '/' + path}`;
 }
 
 app.get('/', (c) => {
@@ -68,11 +112,6 @@ app.get('/', (c) => {
     platform: 'cloudflare-workers',
     version: VERSION,
     git_commit: GIT_COMMIT,
-    // v1.0.4 — baseURL + env-writable status for the Settings UI. On the
-    // Cloudflare edge runtime we cannot write .env (there's no filesystem),
-    // so base_url is read-only and reflects whatever was set via the Pages
-    // dashboard / wrangler.toml vars at deploy time. The Settings card uses
-    // these fields to show the right UI (disabled input + hint).
     base_url: '/',
     is_cloudflare_edge: true,
     env_writable: false,
@@ -84,11 +123,6 @@ app.post('/cache/clear', (c) => {
 });
 
 // ============ baseURL config ============
-//
-// On Cloudflare edge there is no .env file to write — BASE_URL is set via
-// the Pages dashboard (Settings → Environment variables) or wrangler.toml
-// [vars] and requires a redeploy to take effect. We return a clear error
-// so the Settings UI can show the user what to do.
 app.put('/base-url', (c) => {
   return c.json({
     error: {
@@ -99,10 +133,6 @@ app.put('/base-url', (c) => {
 });
 
 // ============ Aggregate homepage config ============
-//
-// Reads/writes the JSON blob in app_settings. The public route
-// (GET /api/aggregate-homepage, mounted before authMiddleware) reads this
-// same config + resolves live entry URLs.
 
 app.get('/aggregate-homepage', async (c) => {
   const cfg = await getAggregateConfig(c.env);
@@ -126,11 +156,158 @@ app.put('/aggregate-homepage', async (c) => {
         display_name: typeof it.display_name === 'string' ? it.display_name : String(it.worker_name),
         sort_order: typeof it.sort_order === 'number' ? it.sort_order : idx,
         ...(typeof it.custom_url === 'string' && it.custom_url ? { custom_url: it.custom_url } : {}),
+        ...(typeof it.title === 'string' ? { title: it.title } : {}),
+        ...(typeof it.description === 'string' ? { description: it.description } : {}),
+        ...(typeof it.screenshot === 'string' ? { screenshot: it.screenshot } : {}),
       }))
       .sort((a: AggregateHomepageItem, b: AggregateHomepageItem) => a.sort_order - b.sort_order);
+  }
+  // Image upload config for screenshots
+  if (body.image_upload && typeof body.image_upload === 'object') {
+    const iu = body.image_upload;
+    if (typeof iu.enabled === 'boolean') cfg.image_upload.enabled = iu.enabled;
+    if (typeof iu.api_url === 'string') cfg.image_upload.api_url = iu.api_url;
+    if (typeof iu.api_key === 'string') cfg.image_upload.api_key = iu.api_key;
+    if (typeof iu.auth_code === 'string') cfg.image_upload.auth_code = iu.auth_code;
+    if (typeof iu.cdn_host === 'string') cfg.image_upload.cdn_host = iu.cdn_host;
+    if (typeof iu.r2_prefix === 'string') cfg.image_upload.r2_prefix = iu.r2_prefix;
   }
   await setAggregateConfig(c.env, cfg);
   return c.json({ success: true, config: cfg });
 });
+
+// ============ Fetch screenshot + title + description ============
+//
+// Uses Cloudflare Browser Rendering API to navigate to a project's URL,
+// capture a screenshot + extract <title> + <meta description>, then upload
+// the screenshot to the configured image host and store the returned path
+// back into the aggregate_homepage config for that item.
+app.post('/aggregate-homepage/fetch-metadata', async (c) => {
+  const { account_id, worker_name } = await c.req.json().catch(() => ({}));
+  if (typeof account_id !== 'number' || typeof worker_name !== 'string') {
+    return c.json({ error: { code: 'VALIDATION_ERROR', message: 'account_id (number) + worker_name (string) 必填' } }, 400);
+  }
+
+  const cfg = await getAggregateConfig(c.env);
+  const item = cfg.items.find(it => it.account_id === account_id && it.worker_name === worker_name);
+  if (!item) {
+    return c.json({ error: { code: 'NOT_FOUND', message: '该项目未在聚合首页配置中' } }, 404);
+  }
+
+  // Resolve the target URL
+  let targetUrl = item.custom_url || '';
+  if (!targetUrl) {
+    targetUrl = item.type === 'pages'
+      ? `https://${item.worker_name}.pages.dev`
+      : `https://${item.worker_name}.workers.dev`;
+  } else if (!/^https?:\/\//i.test(targetUrl)) {
+    targetUrl = `https://${targetUrl}`;
+  }
+
+  // Find a Cloudflare account with browser_render feature
+  const browserAccounts = await getActiveAccountsByFeature(c.env.DB, 'browser_render');
+  if (browserAccounts.length === 0) {
+    return c.json({ error: { code: 'NO_BROWSER_ACCOUNT', message: '没有启用浏览器渲染功能的账号。请在「账号管理」中为某个 Cloudflare 账号启用 browser_render 功能。' } }, 400);
+  }
+  const browserAccount = browserAccounts[0];
+
+  let pageTitle = '';
+  let pageDescription = '';
+  let screenshotPath = item.screenshot || '';
+
+  // 1. Fetch page HTML via browser-render 'content' mode
+  try {
+    const resp = await cfFetch<{ result: string }>(browserAccount, `/accounts/${browserAccount.account_id}/browser-rendering/content`, c.env.ENCRYPTION_KEY, {
+      method: 'POST',
+      body: JSON.stringify({ url: targetUrl }),
+    });
+    const html = resp.result || '';
+    const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+    pageTitle = titleMatch ? titleMatch[1].trim().slice(0, 200) : '';
+    const descMatch = html.match(/<meta\s+name=["']description["']\s+content=["']([^"']*)["']/i);
+    pageDescription = descMatch ? descMatch[1].trim().slice(0, 300) : '';
+  } catch (e: any) {
+    console.warn(`[fetch-metadata] HTML fetch failed for ${targetUrl}: ${e?.message || e}`);
+  }
+
+  // 2. Capture screenshot + upload to image host
+  if (cfg.image_upload.enabled && cfg.image_upload.api_url && cfg.image_upload.api_key) {
+    try {
+      // Call browser-rendering screenshot endpoint directly via fetch
+      const authHeaders = await getAuthHeaders(browserAccount, c.env.ENCRYPTION_KEY);
+      const screenshotResp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${browserAccount.account_id}/browser-rendering/screenshot`, {
+        method: 'POST',
+        headers: { ...authHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: targetUrl }),
+      });
+      if (screenshotResp.ok) {
+        const screenshotBuffer = await screenshotResp.arrayBuffer();
+        screenshotPath = await uploadScreenshotToImageHost(screenshotBuffer, cfg.image_upload, worker_name);
+      }
+    } catch (e: any) {
+      console.warn(`[fetch-metadata] screenshot capture/upload failed for ${targetUrl}: ${e?.message || e}`);
+    }
+  }
+
+  // Update the item with fetched metadata
+  item.title = pageTitle;
+  item.description = pageDescription;
+  if (screenshotPath) item.screenshot = screenshotPath;
+  await setAggregateConfig(c.env, cfg);
+
+  return c.json({
+    success: true,
+    item: {
+      account_id: item.account_id,
+      worker_name: item.worker_name,
+      title: item.title,
+      description: item.description,
+      screenshot: item.screenshot,
+      screenshot_url: screenshotPath ? resolveImageUrl(screenshotPath, cfg.image_upload.cdn_host) : '',
+    },
+  });
+});
+
+/**
+ * Upload a screenshot buffer to the configured image host.
+ * Mirrors the image-upload.ts service: parses {{authCode}} / {{uploadFolder}}
+ * / {{uploadNameType}} template, POSTs as multipart/form-data, extracts the
+ * returned path.
+ */
+async function uploadScreenshotToImageHost(buffer: ArrayBuffer, iu: ImageUploadConfig, workerName: string): Promise<string> {
+  const uploadFolder = (iu.r2_prefix || '/cfmgr').replace(/^\//, '');
+  const uploadUrl = iu.api_url
+    .replace(/\{\{authCode\}\}/g, encodeURIComponent(iu.auth_code || ''))
+    .replace(/\{\{uploadNameType\}\}/g, 'short')
+    .replace(/\{\{uploadFolder\}\}/g, encodeURIComponent(uploadFolder));
+
+  const filename = `cfmgr-${workerName}-${Date.now()}.png`;
+  const blob = new Blob([buffer], { type: 'image/png' });
+  const formData = new FormData();
+  formData.append('file', blob, filename);
+
+  const resp = await fetch(uploadUrl, {
+    method: 'POST',
+    body: formData,
+    headers: { Authorization: `Bearer ${iu.api_key}` },
+  });
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => '');
+    throw new Error(`图床上传失败: HTTP ${resp.status} ${txt.slice(0, 200)}`);
+  }
+  const result: any = await resp.json().catch(() => ({}));
+  let filePath: string | undefined;
+  if (Array.isArray(result)) {
+    filePath = result[0]?.src;
+  } else {
+    const dataNode = result?.data;
+    filePath = result?.fileId || dataNode?.fileId || dataNode?.id || dataNode?.url || result?.url;
+  }
+  if (!filePath) throw new Error('图床上传失败, 未返回文件路径');
+  if (filePath.startsWith('http')) {
+    try { return new URL(filePath).pathname; } catch { /* fall through */ }
+  }
+  return /^\//.test(filePath) ? filePath : '/' + filePath;
+}
 
 export default app;

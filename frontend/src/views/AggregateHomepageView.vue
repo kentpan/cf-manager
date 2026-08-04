@@ -9,12 +9,6 @@
         </div>
         <div class="ah-header__meta">
           <span class="ah-header__count">{{ config.items.length }} 个项目</span>
-          <a
-            v-if="adminUrl"
-            :href="adminUrl"
-            class="ah-header__admin-link"
-            :title="`管理后台 (${adminUrl})`"
-          >管理 →</a>
         </div>
       </header>
 
@@ -35,28 +29,37 @@
       <main v-else class="ah-grid">
         <a
           v-for="item in config.items"
-          :key="`${item.account_name}-${item.display_name}`"
+          :key="`${item.display_name}-${item.url}`"
           :href="item.url"
           target="_blank"
           rel="noopener noreferrer"
           :class="['ah-card', `ah-card--${item.type}`]"
         >
-          <div class="ah-card__head">
-            <div :class="['ah-card__icon', `ah-card__icon--${item.type}`]">
-              {{ item.type === 'pages' ? '📄' : '⚡' }}
+          <!-- Screenshot -->
+          <div class="ah-card__screenshot-wrap">
+            <img
+              v-if="item.screenshot"
+              :src="item.screenshot"
+              :alt="item.display_name"
+              class="ah-card__screenshot"
+              loading="lazy"
+            />
+            <div v-else class="ah-card__screenshot-placeholder">
+              <span class="ah-card__screenshot-icon">{{ item.type === 'pages' ? '📄' : '⚡' }}</span>
             </div>
-            <div class="ah-card__title-wrap">
-              <h3 class="ah-card__title">{{ item.display_name }}</h3>
-              <span :class="['ah-card__type', `ah-card__type--${item.type}`]">{{ item.type === 'pages' ? 'Pages' : 'Worker' }}</span>
-            </div>
+            <span :class="['ah-card__type-badge', `ah-card__type-badge--${item.type}`]">
+              {{ item.type === 'pages' ? 'Pages' : 'Worker' }}
+            </span>
           </div>
+
+          <!-- Body -->
           <div class="ah-card__body">
+            <h3 class="ah-card__title">{{ item.title || item.display_name }}</h3>
+            <p v-if="item.description" class="ah-card__description">{{ item.description }}</p>
             <div class="ah-card__url">{{ item.url }}</div>
-            <div class="ah-card__account">
-              <span class="ah-card__account-label">所属账号:</span>
-              <span class="ah-card__account-value">{{ item.account_name }}</span>
-            </div>
           </div>
+
+          <!-- Footer -->
           <div class="ah-card__footer">
             <span class="ah-card__visit">访问 ↗</span>
           </div>
@@ -65,7 +68,7 @@
 
       <!-- Footer -->
       <footer class="ah-footer">
-        <p>Powered by <a href="https://github.com/hefy2027/cf-manager" target="_blank" rel="noopener noreferrer">CF Manager</a></p>
+        <p>Powered by <a href="https://dist.ccwu.cc" target="_blank" rel="noopener noreferrer">CF Manager</a></p>
       </footer>
     </div>
   </div>
@@ -77,9 +80,11 @@ import { ref, computed, onMounted } from 'vue';
 interface AggregateItem {
   display_name: string;
   type: 'worker' | 'pages';
-  account_name: string;
   url: string;
   sort_order: number;
+  title: string;
+  description: string;
+  screenshot: string;
 }
 interface AggregateConfig {
   enabled: boolean;
@@ -98,12 +103,6 @@ const config = ref<AggregateConfig>({
 });
 const loading = ref(true);
 const theme = computed(() => config.value.theme);
-
-// The admin dashboard URL. When BASE_URL is '/', the admin is at '/#/dashboard'
-// (or '/accounts' etc). When BASE_URL is '/admin/', it's at '/admin/#/dashboard'.
-// We just link to '/#/settings' which works regardless of BASE_URL because
-// vue-router resolves relative to the configured base.
-const adminUrl = '/#/settings';
 
 async function loadConfig() {
   loading.value = true;
@@ -130,24 +129,19 @@ onMounted(() => {
 </script>
 
 <style scoped>
-/* ===== Default theme — clean green-accent cards ===== */
+/* ===== Shared base (both themes) ===== */
 .aggregate-homepage {
   min-height: 100vh;
-  background: linear-gradient(135deg, #f8fef9 0%, #f0f8f4 100%);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  color: #1a2b22;
-  padding: 32px 16px;
   box-sizing: border-box;
 }
-.aggregate-homepage--brutalism {
-  background: #ffe500;
-  color: #000;
-  font-family: 'Courier New', 'SF Mono', monospace;
+.aggregate-homepage * {
+  box-sizing: border-box;
 }
-
 .ah-container {
   max-width: 1200px;
   margin: 0 auto;
+  padding: 32px 16px;
 }
 
 /* Header */
@@ -156,36 +150,20 @@ onMounted(() => {
   justify-content: space-between;
   align-items: flex-end;
   padding-bottom: 24px;
-  border-bottom: 2px solid rgba(24, 160, 88, 0.15);
   margin-bottom: 32px;
   flex-wrap: wrap;
   gap: 16px;
-}
-.aggregate-homepage--brutalism .ah-header {
-  border-bottom: 4px solid #000;
 }
 .ah-header__title {
   margin: 0;
   font-size: 36px;
   font-weight: 800;
   letter-spacing: -0.02em;
-  color: #0e7c4a;
-}
-.aggregate-homepage--brutalism .ah-header__title {
-  color: #000;
-  font-size: 48px;
-  text-transform: uppercase;
-  letter-spacing: -0.04em;
 }
 .ah-header__subtitle {
   margin: 4px 0 0;
   font-size: 16px;
-  color: #5a7a6a;
   font-weight: 400;
-}
-.aggregate-homepage--brutalism .ah-header__subtitle {
-  color: #000;
-  font-weight: 700;
 }
 .ah-header__meta {
   display: flex;
@@ -195,53 +173,18 @@ onMounted(() => {
 }
 .ah-header__count {
   font-size: 14px;
-  color: #5a7a6a;
-  background: rgba(24, 160, 88, 0.1);
   padding: 4px 10px;
   border-radius: 12px;
-}
-.aggregate-homepage--brutalism .ah-header__count {
-  background: #000;
-  color: #ffe500;
-  border: 2px solid #000;
-  padding: 4px 12px;
-  font-weight: 700;
-}
-.ah-header__admin-link {
-  font-size: 13px;
-  color: #18a058;
-  text-decoration: none;
-  padding: 4px 8px;
-  border-radius: 4px;
-  transition: background 0.15s;
-}
-.ah-header__admin-link:hover {
-  background: rgba(24, 160, 88, 0.1);
-}
-.aggregate-homepage--brutalism .ah-header__admin-link {
-  color: #000;
-  background: #fff;
-  border: 2px solid #000;
-  padding: 4px 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-.aggregate-homepage--brutalism .ah-header__admin-link:hover {
-  background: #000;
-  color: #ffe500;
 }
 
 /* Loading */
 .ah-loading {
   text-align: center;
   padding: 80px 0;
-  color: #5a7a6a;
 }
 .ah-loading__spinner {
   width: 32px;
   height: 32px;
-  border: 3px solid rgba(24, 160, 88, 0.2);
-  border-top-color: #18a058;
   border-radius: 50%;
   margin: 0 auto 12px;
   animation: ah-spin 0.8s linear infinite;
@@ -262,12 +205,10 @@ onMounted(() => {
 .ah-empty__title {
   font-size: 18px;
   font-weight: 600;
-  color: #1a2b22;
   margin: 0 0 4px;
 }
 .ah-empty__hint {
   font-size: 14px;
-  color: #5a7a6a;
   margin: 0;
 }
 
@@ -275,205 +216,304 @@ onMounted(() => {
 .ah-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 16px;
-}
-.aggregate-homepage--brutalism .ah-grid {
-  gap: 0;
-  border: 4px solid #000;
-  background: #fff;
-}
-.aggregate-homepage--brutalism .ah-grid > .ah-card {
-  border: 2px solid #000;
-  margin: -2px 0 0 -2px;
+  gap: 20px;
 }
 
 /* Cards */
 .ah-card {
   display: flex;
   flex-direction: column;
-  padding: 18px;
-  background: #fff;
-  border: 1px solid rgba(24, 160, 88, 0.15);
-  border-radius: 12px;
   text-decoration: none;
   color: inherit;
+  overflow: hidden;
   transition: all 0.2s ease;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
-.ah-card:hover {
-  border-color: #18a058;
-  box-shadow: 0 6px 20px rgba(24, 160, 88, 0.15);
-  transform: translateY(-2px);
+.ah-card__screenshot-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  background: #f5f5f5;
 }
-.aggregate-homepage--brutalism .ah-card {
-  border-radius: 0;
-  background: #fff;
-  box-shadow: 6px 6px 0 #000;
-  transition: transform 0.1s ease, box-shadow 0.1s ease;
+.ah-card__screenshot {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
-.aggregate-homepage--brutalism .ah-card:hover {
-  transform: translate(-3px, -3px);
-  box-shadow: 9px 9px 0 #000;
-}
-
-.ah-card__head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 14px;
-}
-.ah-card__icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 8px;
+.ah-card__screenshot-placeholder {
+  width: 100%;
+  height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
-  flex-shrink: 0;
+  background: linear-gradient(135deg, #f0f4f8, #e8edf3);
 }
-.ah-card__icon--worker {
-  background: linear-gradient(135deg, #18a058, #36ad6a);
-  color: #fff;
+.ah-card__screenshot-icon {
+  font-size: 36px;
+  opacity: 0.4;
 }
-.ah-card__icon--pages {
-  background: linear-gradient(135deg, #f5a623, #f97316);
-  color: #fff;
+.ah-card__type-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 4px;
+  text-transform: uppercase;
 }
-.aggregate-homepage--brutalism .ah-card__icon {
-  border-radius: 0;
-  border: 3px solid #000;
-  background: #ffe500 !important;
-}
-.aggregate-homepage--brutalism .ah-card__icon--pages {
-  background: #fff !important;
-}
-.ah-card__title-wrap {
+.ah-card__body {
   flex: 1;
-  min-width: 0;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 .ah-card__title {
   margin: 0;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 700;
-  color: #0e7c4a;
-  white-space: nowrap;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
-.aggregate-homepage--brutalism .ah-card__title {
-  color: #000;
-  text-transform: uppercase;
-}
-.ah-card__type {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 6px;
-  border-radius: 4px;
-  text-transform: uppercase;
-}
-.ah-card__type--worker {
-  background: rgba(24, 160, 88, 0.12);
-  color: #18a058;
-}
-.ah-card__type--pages {
-  background: rgba(245, 166, 35, 0.12);
-  color: #f97316;
-}
-.aggregate-homepage--brutalism .ah-card__type {
-  border: 2px solid #000;
-  background: #fff;
-  color: #000;
-}
-
-.ah-card__body {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 12px;
+.ah-card__description {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .ah-card__url {
-  font-size: 12px;
-  color: #5a7a6a;
+  font-size: 11px;
   font-family: 'SF Mono', 'Monaco', monospace;
   word-break: break-all;
-  background: rgba(24, 160, 88, 0.04);
-  padding: 6px 8px;
+  padding: 4px 6px;
   border-radius: 4px;
 }
-.aggregate-homepage--brutalism .ah-card__url {
-  background: #fff;
-  border: 2px solid #000;
-  padding: 6px 8px;
-  color: #000;
-  font-weight: 700;
-}
-.ah-card__account {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-}
-.ah-card__account-label {
-  color: #8aa;
-}
-.ah-card__account-value {
-  color: #1a2b22;
-  font-weight: 500;
-}
-.aggregate-homepage--brutalism .ah-card__account-label,
-.aggregate-homepage--brutalism .ah-card__account-value {
-  color: #000;
-}
-
 .ah-card__footer {
   display: flex;
   justify-content: flex-end;
-  padding-top: 10px;
-  border-top: 1px solid rgba(24, 160, 88, 0.1);
-}
-.aggregate-homepage--brutalism .ah-card__footer {
-  border-top: 2px solid #000;
+  padding: 10px 16px;
 }
 .ah-card__visit {
   font-size: 13px;
-  color: #18a058;
   font-weight: 600;
-}
-.aggregate-homepage--brutalism .ah-card__visit {
-  color: #000;
-  background: #ffe500;
-  padding: 4px 8px;
-  border: 2px solid #000;
-  font-weight: 700;
-  text-transform: uppercase;
 }
 
 /* Footer */
 .ah-footer {
   margin-top: 48px;
   padding-top: 24px;
-  border-top: 1px solid rgba(24, 160, 88, 0.15);
   text-align: center;
   font-size: 12px;
-  color: #8aa;
-}
-.aggregate-homepage--brutalism .ah-footer {
-  border-top: 4px solid #000;
-  color: #000;
-  font-weight: 700;
-  text-transform: uppercase;
 }
 .ah-footer a {
-  color: #18a058;
   text-decoration: none;
 }
 .ah-footer a:hover {
   text-decoration: underline;
 }
+
+/* ============================================================
+   DEFAULT THEME — clean white cards, green accent
+   ============================================================ */
+.aggregate-homepage--default {
+  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+  color: #1e293b;
+}
+.aggregate-homepage--default .ah-header {
+  border-bottom: 2px solid #e2e8f0;
+}
+.aggregate-homepage--default .ah-header__title {
+  color: #0f172a;
+}
+.aggregate-homepage--default .ah-header__subtitle {
+  color: #64748b;
+}
+.aggregate-homepage--default .ah-header__count {
+  background: rgba(24, 160, 88, 0.1);
+  color: #18a058;
+}
+.aggregate-homepage--default .ah-loading {
+  color: #64748b;
+}
+.aggregate-homepage--default .ah-loading__spinner {
+  border: 3px solid rgba(24, 160, 88, 0.2);
+  border-top-color: #18a058;
+}
+.aggregate-homepage--default .ah-empty__title {
+  color: #1e293b;
+}
+.aggregate-homepage--default .ah-empty__hint {
+  color: #64748b;
+}
+.aggregate-homepage--default .ah-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+.aggregate-homepage--default .ah-card:hover {
+  border-color: #18a058;
+  box-shadow: 0 6px 20px rgba(24, 160, 88, 0.15);
+  transform: translateY(-2px);
+}
+.aggregate-homepage--default .ah-card__screenshot-placeholder {
+  background: linear-gradient(135deg, #f0f4f8, #e8edf3);
+}
+.aggregate-homepage--default .ah-card__type-badge--worker {
+  background: rgba(24, 160, 88, 0.9);
+  color: #fff;
+}
+.aggregate-homepage--default .ah-card__type-badge--pages {
+  background: rgba(245, 166, 35, 0.9);
+  color: #fff;
+}
+.aggregate-homepage--default .ah-card__title {
+  color: #0f172a;
+}
+.aggregate-homepage--default .ah-card__description {
+  color: #64748b;
+}
+.aggregate-homepage--default .ah-card__url {
+  background: #f1f5f9;
+  color: #64748b;
+}
+.aggregate-homepage--default .ah-card__visit {
+  color: #18a058;
+}
+.aggregate-homepage--default .ah-footer {
+  border-top: 1px solid #e2e8f0;
+  color: #94a3b8;
+}
+.aggregate-homepage--default .ah-footer a {
+  color: #18a058;
+}
+
+/* ============================================================
+   BRUTALISM THEME — inspired by 十八线商盟.html (ZhuLongBao)
+   Cream background, teal accent, hard shadows, thick borders
+   ============================================================ */
+.aggregate-homepage--brutalism {
+  background: #EFEDE4;
+  color: #1A1A1A;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "SF Pro Display", "Segoe UI", sans-serif;
+}
+.aggregate-homepage--brutalism .ah-container {
+  max-width: 1280px;
+}
+.aggregate-homepage--brutalism .ah-header {
+  border-bottom: 3px solid #1A1A1A;
+  padding-bottom: 28px;
+}
+.aggregate-homepage--brutalism .ah-header__title {
+  color: #1A1A1A;
+  font-size: 42px;
+  font-weight: 900;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+}
+.aggregate-homepage--brutalism .ah-header__subtitle {
+  color: #3D3D3D;
+  font-weight: 600;
+  font-size: 15px;
+}
+.aggregate-homepage--brutalism .ah-header__count {
+  background: #1A1A1A;
+  color: #EFEDE4;
+  border: 2px solid #1A1A1A;
+  padding: 4px 12px;
+  font-weight: 700;
+  font-size: 13px;
+  border-radius: 8px;
+  box-shadow: 3px 3px 0 #1A1A1A;
+}
+.aggregate-homepage--brutalism .ah-loading {
+  color: #3D3D3D;
+}
+.aggregate-homepage--brutalism .ah-loading__spinner {
+  border: 3px solid rgba(26, 26, 26, 0.15);
+  border-top-color: #4A9EAB;
+}
+.aggregate-homepage--brutalism .ah-empty__title {
+  color: #1A1A1A;
+}
+.aggregate-homepage--brutalism .ah-empty__hint {
+  color: #7A7A7A;
+}
+
+/* Brutalism cards: thick border + hard shadow */
+.aggregate-homepage--brutalism .ah-card {
+  background: #FAF8F2;
+  border: 2px solid #1A1A1A;
+  border-radius: 10px;
+  box-shadow: 4px 4px 0 #1A1A1A;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.aggregate-homepage--brutalism .ah-card:hover {
+  transform: translate(-2px, -2px);
+  box-shadow: 6px 6px 0 #1A1A1A;
+}
+.aggregate-homepage--brutalism .ah-card__screenshot-wrap {
+  border-bottom: 2px solid #1A1A1A;
+  background: #E5E1D4;
+}
+.aggregate-homepage--brutalism .ah-card__screenshot-placeholder {
+  background: #E5E1D4;
+}
+.aggregate-homepage--brutalism .ah-card__type-badge {
+  border: 2px solid #1A1A1A;
+  box-shadow: 2px 2px 0 #1A1A1A;
+  font-weight: 700;
+}
+.aggregate-homepage--brutalism .ah-card__type-badge--worker {
+  background: #4A9EAB;
+  color: #fff;
+}
+.aggregate-homepage--brutalism .ah-card__type-badge--pages {
+  background: #E85A4F;
+  color: #fff;
+}
+.aggregate-homepage--brutalism .ah-card__title {
+  color: #1A1A1A;
+  font-weight: 800;
+}
+.aggregate-homepage--brutalism .ah-card__description {
+  color: #3D3D3D;
+}
+.aggregate-homepage--brutalism .ah-card__url {
+  background: #E5E1D4;
+  color: #3D3D3D;
+  border: 1px solid #1A1A1A;
+  font-weight: 600;
+}
+.aggregate-homepage--brutalism .ah-card__footer {
+  border-top: 2px solid #1A1A1A;
+}
+.aggregate-homepage--brutalism .ah-card__visit {
+  background: #4A9EAB;
+  color: #fff;
+  padding: 4px 10px;
+  border: 2px solid #1A1A1A;
+  border-radius: 6px;
+  box-shadow: 2px 2px 0 #1A1A1A;
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 12px;
+}
+.aggregate-homepage--brutalism .ah-footer {
+  border-top: 3px solid #1A1A1A;
+  color: #1A1A1A;
+  font-weight: 700;
+}
 .aggregate-homepage--brutalism .ah-footer a {
-  color: #000;
+  color: #4A9EAB;
   text-decoration: underline;
   text-decoration-thickness: 2px;
 }

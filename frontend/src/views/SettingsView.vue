@@ -124,6 +124,41 @@
       </n-space>
     </n-card>
 
+    <!-- 图床上传配置（用于聚合首页截图） -->
+    <n-card title="图床上传配置 (聚合首页截图)" size="small" style="margin-bottom: 16px">
+      <n-space vertical>
+        <n-space align="center">
+          <n-switch v-model:value="imageUploadForm.enabled" />
+          <n-text :depth="imageUploadForm.enabled ? 1 : 3">{{ imageUploadForm.enabled ? '已启用' : '已关闭' }}</n-text>
+        </n-space>
+        <n-form label-placement="left" label-width="100" size="small">
+          <n-form-item label="API URL">
+            <n-input v-model:value="imageUploadForm.api_url" placeholder="https://i.xubaoge.com/upload?authCode={{authCode}}&uploadChannel=cfr2&uploadNameType={{uploadNameType}}&uploadFolder={{uploadFolder}}" />
+          </n-form-item>
+          <n-form-item label="API Key">
+            <n-input v-model:value="imageUploadForm.api_key" type="password" show-password-on="click" placeholder="Bearer Token" />
+          </n-form-item>
+          <n-form-item label="授权码">
+            <n-input v-model:value="imageUploadForm.auth_code" placeholder="authCode 模板值" />
+          </n-form-item>
+          <n-form-item label="CDN 域名">
+            <n-input v-model:value="imageUploadForm.cdn_host" placeholder="https://i.xubaoge.com" />
+          </n-form-item>
+          <n-form-item label="存储前缀">
+            <n-input v-model:value="imageUploadForm.r2_prefix" placeholder="/cfmgr" />
+          </n-form-item>
+        </n-form>
+        <n-space>
+          <n-button size="small" type="primary" :loading="imageUploadSaving" @click="saveImageUploadConfig">保存配置</n-button>
+        </n-space>
+        <n-text depth="3" style="font-size: 12px">
+          💡 配置图床后, 在「选择展示项目」弹窗中点击「抓取」按钮, 系统会调用 Cloudflare Browser Rendering 抓取页面截图 + title + description,
+          截图自动上传到图床, 展示在聚合首页的卡片上。
+          需要有 Cloudflare 账号启用 <code>browser_render</code> 功能。
+        </n-text>
+      </n-space>
+    </n-card>
+
     <n-card title="缓存管理" size="small" style="margin-bottom: 16px">
       <n-space>
         <n-button type="warning" @click="handleClearCache" :loading="clearing">清除缓存</n-button>
@@ -342,12 +377,19 @@
               <div class="agg-select-item__actions" v-if="isAggregateItemSelected(group.account_id, w.name)">
                 <n-button size="tiny" quaternary @click="moveAggregateItem(group.account_id, w.name, -1)">↑</n-button>
                 <n-button size="tiny" quaternary @click="moveAggregateItem(group.account_id, w.name, 1)">↓</n-button>
+                <n-button
+                  size="tiny"
+                  type="info"
+                  ghost
+                  :loading="fetchingMetadata === `${group.account_id}-${w.name}`"
+                  @click="fetchMetadataForItem(group.account_id, w.name)"
+                >抓取</n-button>
                 <n-input
                   size="tiny"
                   :value="getAggregateDisplayName(group.account_id, w.name)"
                   @update:value="(v: string) => setAggregateDisplayName(group.account_id, w.name, v)"
                   placeholder="自定义展示名"
-                  style="width: 140px"
+                  style="width: 120px"
                 />
               </div>
             </div>
@@ -536,6 +578,17 @@ interface AggregateItem {
   display_name: string;
   sort_order: number;
   custom_url?: string;
+  title?: string;
+  description?: string;
+  screenshot?: string;
+}
+interface ImageUploadConfig {
+  enabled: boolean;
+  api_url: string;
+  api_key: string;
+  auth_code: string;
+  cdn_host: string;
+  r2_prefix: string;
 }
 interface AggregateConfig {
   enabled: boolean;
@@ -543,32 +596,50 @@ interface AggregateConfig {
   title: string;
   subtitle: string;
   items: AggregateItem[];
+  image_upload: ImageUploadConfig;
 }
 const aggregateConfig = ref<AggregateConfig>({
   enabled: false, theme: 'default', title: '作品集', subtitle: 'Projects & Demos', items: [],
+  image_upload: { enabled: false, api_url: '', api_key: '', auth_code: '', cdn_host: '', r2_prefix: '/cfmgr' },
 });
 const aggregateSaving = ref(false);
 const showAggregateSelection = ref(false);
 const showAggregateStyle = ref(false);
 const aggregateLoadingWorkers = ref(false);
-// All Workers + Pages grouped by account (loaded when the selection modal opens)
 const aggregateWorkersByAccount = ref<Array<{ account_id: number; account_name: string; workers: Array<{ name: string; type: 'worker' | 'pages'; domains: string[] }> }>>([]);
-// Local working copy of selected items while the selection modal is open
 const aggregateSelectionDraft = ref<AggregateItem[]>([]);
 const aggregateStyleForm = ref<{ title: string; subtitle: string; theme: 'default' | 'brutalism' }>({
   title: '作品集', subtitle: 'Projects & Demos', theme: 'default',
 });
+const imageUploadForm = ref<ImageUploadConfig>({
+  enabled: false,
+  api_url: 'https://i.xubaoge.com/upload?authCode={{authCode}}&uploadChannel=cfr2&uploadNameType={{uploadNameType}}&uploadFolder={{uploadFolder}}',
+  api_key: '', auth_code: '', cdn_host: 'https://i.xubaoge.com', r2_prefix: '/cfmgr',
+});
+const imageUploadSaving = ref(false);
+const fetchingMetadata = ref<string>('');
 
 async function fetchAggregateConfig() {
   try {
     const { data } = await apiClient.get('/settings/aggregate-homepage');
+    const iu = data.image_upload || {};
     aggregateConfig.value = {
       enabled: !!data.enabled,
       theme: data.theme === 'brutalism' ? 'brutalism' : 'default',
       title: data.title || '作品集',
       subtitle: data.subtitle || 'Projects & Demos',
       items: Array.isArray(data.items) ? data.items : [],
+      image_upload: {
+        enabled: !!iu.enabled,
+        api_url: iu.api_url || '',
+        api_key: iu.api_key || '',
+        auth_code: iu.auth_code || '',
+        cdn_host: iu.cdn_host || '',
+        r2_prefix: iu.r2_prefix || '/cfmgr',
+      },
     };
+    // Sync the image upload form
+    imageUploadForm.value = { ...aggregateConfig.value.image_upload };
   } catch {
     // Use defaults
   }
@@ -700,6 +771,48 @@ async function saveAggregateStyle() {
     message.error(err?.errorMessage || '保存失败');
   } finally {
     aggregateSaving.value = false;
+  }
+}
+
+async function saveImageUploadConfig() {
+  imageUploadSaving.value = true;
+  try {
+    const { data } = await apiClient.put('/settings/aggregate-homepage', {
+      image_upload: imageUploadForm.value,
+    });
+    aggregateConfig.value = data.config;
+    message.success('图床配置已保存');
+  } catch (err: any) {
+    message.error(err?.errorMessage || '保存失败');
+  } finally {
+    imageUploadSaving.value = false;
+  }
+}
+
+async function fetchMetadataForItem(accountId: number, workerName: string) {
+  const key = `${accountId}-${workerName}`;
+  fetchingMetadata.value = key;
+  try {
+    const { data } = await apiClient.post('/settings/aggregate-homepage/fetch-metadata', {
+      account_id: accountId,
+      worker_name: workerName,
+    });
+    // Update the draft item with the fetched metadata
+    const item = aggregateSelectionDraft.value.find(it => it.account_id === accountId && it.worker_name === workerName);
+    if (item) {
+      item.title = data.item.title;
+      item.description = data.item.description;
+      item.screenshot = data.item.screenshot;
+    }
+    if (data.item.title || data.item.description) {
+      message.success(`已抓取: ${data.item.title || workerName}`);
+    } else {
+      message.warning('抓取完成, 但未获取到 title/description (页面可能无 meta 标签)');
+    }
+  } catch (err: any) {
+    message.error(err?.errorMessage || '抓取失败');
+  } finally {
+    fetchingMetadata.value = '';
   }
 }
 

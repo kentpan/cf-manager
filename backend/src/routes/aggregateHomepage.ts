@@ -48,6 +48,17 @@ interface AggregateHomepageItem {
   display_name: string;
   sort_order: number;
   custom_url?: string;
+  title?: string;
+  description?: string;
+  screenshot?: string;
+}
+interface ImageUploadConfig {
+  enabled: boolean;
+  api_url: string;
+  api_key: string;
+  auth_code: string;
+  cdn_host: string;
+  r2_prefix: string;
 }
 interface AggregateHomepageConfig {
   enabled: boolean;
@@ -55,26 +66,47 @@ interface AggregateHomepageConfig {
   title: string;
   subtitle: string;
   items: AggregateHomepageItem[];
+  image_upload: ImageUploadConfig;
 }
+const DEFAULTS: AggregateHomepageConfig = {
+  enabled: false, theme: 'default', title: '作品集', subtitle: 'Projects & Demos',
+  items: [],
+  image_upload: { enabled: false, api_url: '', api_key: '', auth_code: '', cdn_host: '', r2_prefix: '/cfmgr' },
+};
 
 function readConfig(): AggregateHomepageConfig {
   const raw = getSetting(AGGREGATE_HOMEPAGE_KEY);
-  const defaults: AggregateHomepageConfig = {
-    enabled: false, theme: 'default', title: '作品集', subtitle: 'Projects & Demos', items: [],
-  };
-  if (!raw) return defaults;
+  if (!raw) return DEFAULTS;
   try {
     const parsed = JSON.parse(raw);
+    const iu = parsed.image_upload || {};
     return {
       enabled: !!parsed.enabled,
       theme: parsed.theme === 'brutalism' ? 'brutalism' : 'default',
-      title: typeof parsed.title === 'string' ? parsed.title : defaults.title,
-      subtitle: typeof parsed.subtitle === 'string' ? parsed.subtitle : defaults.subtitle,
+      title: typeof parsed.title === 'string' ? parsed.title : DEFAULTS.title,
+      subtitle: typeof parsed.subtitle === 'string' ? parsed.subtitle : DEFAULTS.subtitle,
       items: Array.isArray(parsed.items) ? parsed.items : [],
+      image_upload: {
+        enabled: !!iu.enabled,
+        api_url: typeof iu.api_url === 'string' ? iu.api_url : '',
+        api_key: typeof iu.api_key === 'string' ? iu.api_key : '',
+        auth_code: typeof iu.auth_code === 'string' ? iu.auth_code : '',
+        cdn_host: typeof iu.cdn_host === 'string' ? iu.cdn_host : '',
+        r2_prefix: typeof iu.r2_prefix === 'string' ? iu.r2_prefix : '/cfmgr',
+      },
     };
   } catch {
-    return defaults;
+    return DEFAULTS;
   }
+}
+
+/** Resolve a stored path to a full URL using the configured CDN host. */
+function resolveImageUrl(path: string, cdnHost: string): string {
+  if (!path) return '';
+  if (path.startsWith('http')) return path;
+  if (!cdnHost) return path;
+  const cleanHost = cdnHost.replace(/\/+$/, '');
+  return `${cleanHost}${/^\//.test(path) ? path : '/' + path}`;
 }
 
 const CF_BASE = 'https://api.cloudflare.com/client/v4';
@@ -176,6 +208,8 @@ router.get('/', async (_req: Request, res: Response, next: NextFunction) => {
       return;
     }
 
+    const cdnHost = cfg.image_upload.cdn_host;
+
     // Resolve each selected item to a live URL. We do this in parallel
     // (Promise.all) so the homepage loads fast even with 10+ items.
     const allAccounts = getActiveAccountsByFeature('workers');
@@ -192,9 +226,11 @@ router.get('/', async (_req: Request, res: Response, next: NextFunction) => {
         return {
           display_name: it.display_name || it.worker_name,
           type: it.type,
-          account_name: account.name,
           url,
           sort_order: it.sort_order,
+          title: it.title || '',
+          description: it.description || '',
+          screenshot: it.screenshot ? resolveImageUrl(it.screenshot, cdnHost) : '',
         };
       } catch (e: any) {
         appLogger.warn(`[AggregateHomepage] resolve failed for ${it.worker_name} (account ${it.account_id}): ${e?.message || e}`);
@@ -206,15 +242,17 @@ router.get('/', async (_req: Request, res: Response, next: NextFunction) => {
         return {
           display_name: it.display_name || it.worker_name,
           type: it.type,
-          account_name: account.name,
           url: fallback,
           sort_order: it.sort_order,
+          title: it.title || '',
+          description: it.description || '',
+          screenshot: it.screenshot ? resolveImageUrl(it.screenshot, cdnHost) : '',
         };
       }
     }));
 
     const filtered = items
-      .filter((x): x is { display_name: string; type: 'worker' | 'pages'; account_name: string; url: string; sort_order: number } => x !== null)
+      .filter((x): x is NonNullable<typeof x> => x !== null)
       .sort((a, b) => a.sort_order - b.sort_order);
 
     res.json({
