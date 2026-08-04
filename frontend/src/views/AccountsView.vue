@@ -314,7 +314,15 @@
 import { ref, h, computed, onMounted } from 'vue';
 import { NButton, NSpace, NProgress, NTag, NDropdown, NTooltip, useMessage } from 'naive-ui';
 import type { DataTableColumns } from 'naive-ui';
-import type { UploadFileInfo } from 'naive-ui';
+// UploadFileInfo is not exported from naive-ui's main index in v2.44.x.
+// Define a minimal local type that matches the shape we actually use
+// (.id, .name, .status) so vue-tsc doesn't fail the build.
+interface UploadFileInfo {
+  id: string;
+  name: string;
+  status?: string;
+  [key: string]: any;
+}
 import { useAccountStore } from '../stores/accountStore';
 import { accountsApi } from '../api/accounts';
 import { dialog } from '../utils/discreteApi';
