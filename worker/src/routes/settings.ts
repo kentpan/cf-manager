@@ -214,6 +214,8 @@ app.post('/aggregate-homepage/fetch-metadata', async (c) => {
   let pageTitle = '';
   let pageDescription = '';
   let screenshotPath = item.screenshot || '';
+  let htmlFetchError = '';
+  let screenshotError = '';
 
   // 1. Fetch page HTML via browser-render 'content' mode
   try {
@@ -227,13 +229,13 @@ app.post('/aggregate-homepage/fetch-metadata', async (c) => {
     const descMatch = html.match(/<meta\s+name=["']description["']\s+content=["']([^"']*)["']/i);
     pageDescription = descMatch ? descMatch[1].trim().slice(0, 300) : '';
   } catch (e: any) {
-    console.warn(`[fetch-metadata] HTML fetch failed for ${targetUrl}: ${e?.message || e}`);
+    htmlFetchError = e?.message || String(e);
+    console.warn(`[fetch-metadata] HTML fetch failed for ${targetUrl}: ${htmlFetchError}`);
   }
 
   // 2. Capture screenshot + upload to image host
   if (cfg.image_upload.enabled && cfg.image_upload.api_url && cfg.image_upload.api_key) {
     try {
-      // Call browser-rendering screenshot endpoint directly via fetch
       const authHeaders = await getAuthHeaders(browserAccount, c.env.ENCRYPTION_KEY);
       const screenshotResp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${browserAccount.account_id}/browser-rendering/screenshot`, {
         method: 'POST',
@@ -243,18 +245,25 @@ app.post('/aggregate-homepage/fetch-metadata', async (c) => {
       if (screenshotResp.ok) {
         const screenshotBuffer = await screenshotResp.arrayBuffer();
         screenshotPath = await uploadScreenshotToImageHost(screenshotBuffer, cfg.image_upload, worker_name);
+      } else {
+        screenshotError = `browser-render screenshot HTTP ${screenshotResp.status}`;
       }
     } catch (e: any) {
-      console.warn(`[fetch-metadata] screenshot capture/upload failed for ${targetUrl}: ${e?.message || e}`);
+      screenshotError = e?.message || String(e);
+      console.warn(`[fetch-metadata] screenshot capture/upload failed for ${targetUrl}: ${screenshotError}`);
     }
+  } else {
+    screenshotError = '图床未启用或缺少 api_url / api_key 配置';
   }
 
-  // Update the item with fetched metadata
+  // Update the item with the fetched metadata
   item.title = pageTitle;
   item.description = pageDescription;
-  if (screenshotPath) item.screenshot = screenshotPath;
+  if (screenshotPath && !screenshotError) item.screenshot = screenshotPath;
   await setAggregateConfig(c.env, cfg);
 
+  // Return detailed status so the frontend can show what succeeded/failed
+  // and offer per-item retry for title/description vs screenshot.
   return c.json({
     success: true,
     item: {
@@ -263,7 +272,14 @@ app.post('/aggregate-homepage/fetch-metadata', async (c) => {
       title: item.title,
       description: item.description,
       screenshot: item.screenshot,
-      screenshot_url: screenshotPath ? resolveImageUrl(screenshotPath, cfg.image_upload.cdn_host) : '',
+      screenshot_url: item.screenshot ? resolveImageUrl(item.screenshot, cfg.image_upload.cdn_host) : '',
+    },
+    status: {
+      html_ok: !htmlFetchError,
+      html_error: htmlFetchError || '',
+      screenshot_ok: !screenshotError && !!screenshotPath,
+      screenshot_error: screenshotError || '',
+      target_url: targetUrl,
     },
   });
 });

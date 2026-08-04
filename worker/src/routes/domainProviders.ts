@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { Env } from '../types';
 import {
   getAllProviders, getProviderById, createProvider, updateProvider, deleteProvider,
-  getAccountsByProvider, getAccountById, getAccountWithProvider,
+  getAccountsByProvider, getProviderAccountById, getAccountWithProvider,
   createProviderAccount, updateProviderAccount, deleteProviderAccount,
 } from '../db/models';
 import { getAuthHeaders, cfFetch } from '../services/cfApi';
@@ -104,7 +104,7 @@ app.post('/:providerId/accounts', async (c) => {
 
 app.put('/accounts/:id', async (c) => {
   const id = parseInt(c.req.param('id'), 10);
-  const existing = await getAccountById(c.env.DB, id);
+  const existing = await getProviderAccountById(c.env.DB, id);
   if (!existing) {
     return c.json({ error: { code: 'NOT_FOUND', message: '账号不存在' } }, 404);
   }
@@ -123,7 +123,7 @@ app.put('/accounts/:id', async (c) => {
 
 app.delete('/accounts/:id', async (c) => {
   const id = parseInt(c.req.param('id'), 10);
-  if (!await getAccountById(c.env.DB, id)) {
+  if (!await getProviderAccountById(c.env.DB, id)) {
     return c.json({ error: { code: 'NOT_FOUND', message: '账号不存在' } }, 404);
   }
   await deleteProviderAccount(c.env.DB, id);

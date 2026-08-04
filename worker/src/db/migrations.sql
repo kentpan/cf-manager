@@ -1,36 +1,17 @@
 -- ============================================================
 -- D1 列级迁移脚本
--- 
--- 此文件包含所有需要通过 ALTER TABLE 添加的列。
--- D1 不支持 "ALTER TABLE ... ADD COLUMN IF NOT EXISTS" 语法，
--- 所以在 deploy-cf.yml 中执行时会用 "|| true" 忽略"列已存在"错误。
 --
--- 新增列时：只需在此文件末尾追加 ALTER TABLE 语句即可，
--- 无需修改 deploy-cf.yml。
+-- 此文件由 GitHub Actions workflow 用 `wrangler d1 execute --file` 整体执行。
+-- D1 在 --file 模式下遇到错误会中止后续语句，所以这个文件只放
+-- "一定成功"的语句（INSERT OR IGNORE / UPDATE）。ALTER TABLE 语句在
+-- workflow 中逐条用 --command 执行（每条带 || true 兜底）。
+--
+-- 新增列时：在 workflow 的 "Run D1 migrations" 步骤追加 ALTER TABLE 语句。
+-- 新增 seed 数据时：在下方追加 INSERT OR IGNORE 语句。
 -- ============================================================
 
--- --- accounts 表 ---
-ALTER TABLE accounts ADD COLUMN enabled_features TEXT DEFAULT 'ai,workers,browser_render,dns,storage';
-ALTER TABLE accounts ADD COLUMN password TEXT;
-ALTER TABLE accounts ADD COLUMN available_features TEXT DEFAULT '';
-ALTER TABLE accounts ADD COLUMN proxy_url TEXT DEFAULT '';
-ALTER TABLE accounts ADD COLUMN proxy_enabled INTEGER DEFAULT 0;
-
--- --- quota_usage 表 ---
-ALTER TABLE quota_usage ADD COLUMN optimistic INTEGER DEFAULT 0;
-ALTER TABLE quota_usage ADD COLUMN exhausted INTEGER DEFAULT 0;
-
--- --- domain_providers 表（列迁移 + 种子数据，幂等）---
-
--- v1.0.4 新增列（在已有表上 ALTER TABLE ADD COLUMN；列已存在时会报错，用 || true 兜底）
-ALTER TABLE domain_providers ADD COLUMN register_url TEXT DEFAULT '';
-ALTER TABLE domain_providers ADD COLUMN description TEXT DEFAULT '';
-ALTER TABLE domain_providers ADD COLUMN commission_model TEXT DEFAULT '';
-ALTER TABLE domain_providers ADD COLUMN registration_steps TEXT DEFAULT '';
-ALTER TABLE domain_providers ADD COLUMN credential_fields TEXT DEFAULT '';
-
--- 种子数据（幂等）。D1 不支持 INSERT ... ON CONFLICT，所以用 INSERT OR IGNORE 兜底。
--- 注意：UPDATE 用 COALESCE(NULLIF(...), ?) 补齐空字段，已存在的用户编辑不会被覆盖。
+-- --- domain_providers 种子数据（幂等）---
+-- D1 不支持 INSERT ... ON CONFLICT，用 INSERT OR IGNORE 兜底。
 -- registration_steps / credential_fields 是 JSON 字符串，单引号转义为 ''。
 INSERT OR IGNORE INTO domain_providers (code, name, api_base_url, auth_type, capabilities, doc_url, register_url, promo_url, regions, description, commission_model, registration_steps, credential_fields, is_default, enabled) VALUES ('dnshe', 'DNSHE', 'https://api005.dnshe.com/index.php', 'header', 'domains.list,domains.register,domains.delete,domains.renew,dns.list,dns.create,dns.update,dns.delete,quota', 'https://my.dnshe.com/knowledgebase/13/DNSHE%E5%85%8D%E8%B4%B9%E5%9F%9F%E5%90%8DAPI%E4%BD%BF%E7%94%A8%E6%96%87%E6%A1%A3V2.0.html', 'https://my.dnshe.com/register.php', 'https://my.dnshe.com/go.php?code=KRDQzaIlJb', 'GLOBAL', '免费子域名注册平台, 支持 200+ 根域名后缀, 自带 DNS 解析与 Cloudflare 接入', '免费子域名, 默认 1 年有效期, 续期消耗 9.90 信用点', '[{"title":"注册 DNSHE 账号","detail":"访问 my.dnshe.com, 用邮箱注册并完成邮箱验证 (个人/企业均可)"},{"title":"前往「免费域名管理」","detail":"登录客户区 → 左侧导航「免费域名管理」→ 进入域名管理面板"},{"title":"创建 API Key","detail":"在「API 管理」→「创建 API Key」, 填写 Key 名称后保存。⚠️ api_secret 仅显示一次, 请立即复制保存"},{"title":"查看可用根域名","detail":"在域名列表页可看到所有可注册的根域名 (如 dnshe.com, 等), 选一个心仪的根域名"},{"title":"配置到本系统","detail":"将 API Key + API Secret 填入下方表单, 即可在本系统内注册/管理子域名 + 配置 DNS 解析"}]', '[{"key":"api_key","label":"API Key","type":"text","required":true,"placeholder":"cfsd_xxxxxxxxxx","help":"在 DNSHE 客户区「API 管理」页面创建, 以 cfsd_ 开头"},{"key":"api_secret","label":"API Secret","type":"password","required":true,"placeholder":"创建 API Key 时仅显示一次, 请妥善保存","help":"⚠️ 创建时只显示一次, 丢失需重新生成"}]', 1, 1);
 INSERT OR IGNORE INTO domain_providers (code, name, api_base_url, auth_type, capabilities, doc_url, register_url, promo_url, regions, description, commission_model, registration_steps, credential_fields, is_default, enabled) VALUES ('porkbun', 'Porkbun', 'https://api.porkbun.com/api/json/v3', 'bearer', 'domains.list,dns.list,dns.create,dns.update,dns.delete', 'https://porkbun.com/api/apiDoc', 'https://porkbun.com/account/register', 'https://porkbun.com/', 'GLOBAL', '海外低成本域名注册商, 价格透明无续费涨价, 免费 WHOIS 隐私 + SSL', '按年付费注册, 价格透明 (如 .com $10.48/年, 续费同价)', '[{"title":"注册 Porkbun 账号","detail":"访问 porkbun.com/account/register, 用邮箱注册并验证"},{"title":"添加域名到购物车","detail":"搜索心仪域名, 加入购物车并完成付款 (支持支付宝/PayPal/信用卡)"},{"title":"进入 API Access 页面","detail":"登录后 → Account → API Access → 点击「Create API Key」"},{"title":"保存 API Key + Secret","detail":"系统会同时显示 apikey + secretapi, ⚠️ secretapi 仅显示一次, 请立即复制保存"},{"title":"配置到本系统","detail":"将 apikey + secretapi 填入下方表单, 即可在本系统内管理 Porkbun 域名 + DNS 记录"}]', '[{"key":"api_key","label":"API Key","type":"text","required":true,"placeholder":"pk1_xxxxxxxxxx","help":"在 Porkbun Account → API Access 页面创建, 以 pk1_ 开头"},{"key":"api_secret","label":"Secret API Key","type":"password","required":true,"placeholder":"sk1_xxxxxxxxxx","help":"⚠️ 创建时仅显示一次, 丢失需重新生成"}]', 0, 1);

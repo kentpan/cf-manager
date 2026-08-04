@@ -43,6 +43,7 @@ function maskCreds(a: DomainProviderAccount) {
     ...a,
     api_key: a.api_key ? '***encrypted***' : null,
     api_secret: a.api_secret ? '***encrypted***' : null,
+    api_user: a.api_user ? '***encrypted***' : null,
   };
 }
 

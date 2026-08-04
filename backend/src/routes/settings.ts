@@ -333,6 +333,8 @@ router.post('/aggregate-homepage/fetch-metadata', async (req, res, next: NextFun
     let pageTitle = '';
     let pageDescription = '';
     let screenshotPath = item.screenshot || '';
+    let htmlFetchError = '';
+    let screenshotError = '';
 
     // 1. Fetch the page HTML via browser-render 'content' mode to extract
     //    <title> + <meta name="description">. This is a single API call
@@ -348,34 +350,41 @@ router.post('/aggregate-homepage/fetch-metadata', async (req, res, next: NextFun
       const descMatch = html.match(/<meta\s+name=["']description["']\s+content=["']([^"']*)["']/i);
       pageDescription = descMatch ? descMatch[1].trim().slice(0, 300) : '';
     } catch (e: any) {
-      // HTML fetch failed — we'll still try the screenshot below
-      // but surface the error to the caller.
-      console.warn(`[fetch-metadata] HTML fetch failed for ${targetUrl}: ${e?.message || e}`);
+      htmlFetchError = e?.message || String(e);
+      console.warn(`[fetch-metadata] HTML fetch failed for ${targetUrl}: ${htmlFetchError}`);
     }
 
     // 2. Capture screenshot via browser-render 'screenshot' mode + upload
-    //    to the configured image host.
+    //    to the configured image host. Run this even if image_upload is not
+    //    enabled — if disabled we just skip the upload but still log whether
+    //    the screenshot API call itself worked.
     if (cfg.image_upload.enabled && cfg.image_upload.api_url && cfg.image_upload.api_key) {
       try {
         const { renderPage } = await import('../services/browserRenderService');
         const screenshotResult = await renderPage(browserAccount, targetUrl, 'screenshot');
-        // screenshotResult.screenshot is a data:image/png;base64,... URL
         if (screenshotResult.screenshot) {
           const base64Data = screenshotResult.screenshot.replace(/^data:image\/png;base64,/, '');
           const buffer = Buffer.from(base64Data, 'base64');
           screenshotPath = await uploadScreenshotToImageHost(buffer, cfg.image_upload, worker_name);
+        } else {
+          screenshotError = 'browser-render 返回空截图数据';
         }
       } catch (e: any) {
-        console.warn(`[fetch-metadata] screenshot capture/upload failed for ${targetUrl}: ${e?.message || e}`);
+        screenshotError = e?.message || String(e);
+        console.warn(`[fetch-metadata] screenshot capture/upload failed for ${targetUrl}: ${screenshotError}`);
       }
+    } else {
+      screenshotError = '图床未启用或缺少 api_url / api_key 配置';
     }
 
     // Update the item with the fetched metadata
     item.title = pageTitle;
     item.description = pageDescription;
-    if (screenshotPath) item.screenshot = screenshotPath;
+    if (screenshotPath && !screenshotError) item.screenshot = screenshotPath;
     setAggregateConfig(cfg);
 
+    // Return detailed status so the frontend can show what succeeded/failed
+    // and offer per-item retry for title/description vs screenshot.
     res.json({
       success: true,
       item: {
@@ -384,7 +393,14 @@ router.post('/aggregate-homepage/fetch-metadata', async (req, res, next: NextFun
         title: item.title,
         description: item.description,
         screenshot: item.screenshot,
-        screenshot_url: screenshotPath ? resolveImageUrl(screenshotPath, cfg.image_upload.cdn_host) : '',
+        screenshot_url: item.screenshot ? resolveImageUrl(item.screenshot, cfg.image_upload.cdn_host) : '',
+      },
+      status: {
+        html_ok: !htmlFetchError,
+        html_error: htmlFetchError || '',
+        screenshot_ok: !screenshotError && !!screenshotPath,
+        screenshot_error: screenshotError || '',
+        target_url: targetUrl,
       },
     });
   } catch (err) { next(err); }

@@ -150,13 +150,40 @@ jobs:
             wrangler d1 execute "$DB_NAME" --file=worker/src/db/schema.sql --remote
           fi
 
-          # Column-level migrations (idempotent via INSERT OR IGNORE / || true)
-          echo "=== Running column-level migrations ==="
-          while IFS= read -r line; do
-            line=$(echo "$line" | sed 's/--.*$//' | xargs)
-            [ -z "$line" ] && continue
-            wrangler d1 execute "$DB_NAME" --command="$line" --remote 2>/dev/null || true
-          done < worker/src/db/migrations.sql
+          # Column-level migrations — split into two parts:
+          #
+          # 1. ALTER TABLE statements: executed one-by-one via --command with
+          #    `|| true` because D1 doesn't support ADD COLUMN IF NOT EXISTS
+          #    and already-existing columns cause an error that would abort
+          #    the rest of the file in --file mode.
+          #
+          # 2. INSERT OR IGNORE / UPDATE statements: executed via --file in
+          #    one shot. These are guaranteed to succeed (INSERT OR IGNORE
+          #    skips existing rows, UPDATE matches by WHERE). Running them
+          #    via --file avoids bash quote-mangling that broke the seed
+          #    data when using `while read` + `--command="$line"` (the JSON
+          #    strings contain single quotes with '' escaping).
+          echo "=== Step 2a: Column-level ALTER TABLE (idempotent) ==="
+          for stmt in \
+            "ALTER TABLE accounts ADD COLUMN enabled_features TEXT DEFAULT 'ai,workers,browser_render,dns,storage'" \
+            "ALTER TABLE accounts ADD COLUMN password TEXT" \
+            "ALTER TABLE accounts ADD COLUMN available_features TEXT DEFAULT ''" \
+            "ALTER TABLE accounts ADD COLUMN proxy_url TEXT DEFAULT ''" \
+            "ALTER TABLE accounts ADD COLUMN proxy_enabled INTEGER DEFAULT 0" \
+            "ALTER TABLE quota_usage ADD COLUMN optimistic INTEGER DEFAULT 0" \
+            "ALTER TABLE quota_usage ADD COLUMN exhausted INTEGER DEFAULT 0" \
+            "ALTER TABLE domain_providers ADD COLUMN register_url TEXT DEFAULT ''" \
+            "ALTER TABLE domain_providers ADD COLUMN description TEXT DEFAULT ''" \
+            "ALTER TABLE domain_providers ADD COLUMN commission_model TEXT DEFAULT ''" \
+            "ALTER TABLE domain_providers ADD COLUMN registration_steps TEXT DEFAULT ''" \
+            "ALTER TABLE domain_providers ADD COLUMN credential_fields TEXT DEFAULT ''" \
+            "ALTER TABLE domain_provider_accounts ADD COLUMN api_user TEXT" \
+          ; do
+            wrangler d1 execute "$DB_NAME" --command="$stmt" --remote 2>/dev/null || true
+          done
+
+          echo "=== Step 2b: Seed data (INSERT OR IGNORE + UPDATE, via --file) ==="
+          wrangler d1 execute "$DB_NAME" --file=worker/src/db/migrations.sql --remote 2>&1 || true
 
           echo "DATABASE_ID=$DB_ID" >> $GITHUB_ENV
 
@@ -194,6 +221,25 @@ jobs:
         working-directory: worker
         shell: bash
         run: |
+          # Pages projects cannot have both "main" and "pages_build_output_dir"
+          # in wrangler.toml — wrangler rejects it with:
+          #   Configuration file cannot contain both "main" and "pages_build_output_dir"
+          # This project deploys as a Pages project (the _worker.js is built
+          # by build.js into public/), so we strip any "main =" line as a
+          # safety net in case a fork re-adds it.
+          sed -i '/^main = /d' wrangler.toml
+          # ENCRYPTION_KEY / API_SECRET / DEMO_ACCOUNT_IDS are configured as
+          # Pages *secrets* below via `wrangler pages secret put`. They MUST
+          # NOT also appear under [vars] — Cloudflare rejects the deploy with
+          # "Binding name 'X' already in use". Strip the entire [vars]
+          # section (header + any key=value lines until the next section or
+          # EOF) as a safety net in case a fork re-adds it.
+          # Using awk so we correctly handle the section boundary.
+          awk '
+            /^\[vars\]/ { in_vars=1; next }
+            /^\[/ { in_vars=0 }
+            { if (!in_vars) print }
+          ' wrangler.toml > wrangler.toml.tmp && mv wrangler.toml.tmp wrangler.toml
           sed -i "s/database_id = \".*\"/database_id = \"${DATABASE_ID}\"/" wrangler.toml
           sed -i "s/id = \"YOUR_KV_NAMESPACE_ID\"/id = \"${KV_ID}\"/" wrangler.toml
           sed -i "s/^name = \".*\"/name = \"${PROJECT_NAME}\"/" wrangler.toml

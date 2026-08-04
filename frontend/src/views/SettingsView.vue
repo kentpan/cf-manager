@@ -454,6 +454,66 @@
         </n-space>
       </template>
     </n-modal>
+
+    <!-- 抓取结果预览 Modal -->
+    <n-modal v-model:show="showFetchResult" preset="card" title="抓取结果预览" style="width: 640px; max-width: 95vw">
+      <div v-if="fetchResultData" style="display: flex; flex-direction: column; gap: 16px">
+        <!-- Screenshot preview -->
+        <div>
+          <div style="font-weight: 600; margin-bottom: 8px">截图</div>
+          <div v-if="fetchResultData.screenshotUrl" style="border: 1px solid #eee; border-radius: 8px; overflow: hidden">
+            <img :src="fetchResultData.screenshotUrl" :alt="fetchResultData.workerName" style="width: 100%; display: block" />
+          </div>
+          <n-alert v-else type="warning" :bordered="false" style="font-size: 13px">
+            截图抓取失败: {{ fetchResultData.screenshotError || '未知错误' }}
+          </n-alert>
+          <n-space style="margin-top: 8px" v-if="!fetchResultData.screenshotOk">
+            <n-button size="small" type="warning" :loading="fetchingMetadata === `${fetchResultData.accountId}-${fetchResultData.workerName}`" @click="fetchMetadataForItem(fetchResultData.accountId, fetchResultData.workerName); showFetchResult = false">
+              重试截图
+            </n-button>
+          </n-space>
+        </div>
+
+        <!-- Title -->
+        <div>
+          <div style="font-weight: 600; margin-bottom: 4px">页面标题 (title)</div>
+          <n-input :value="fetchResultData.title" readonly type="text" />
+          <n-alert v-if="!fetchResultData.htmlOk" type="warning" :bordered="false" style="font-size: 13px; margin-top: 4px">
+            Title/Description 抓取失败: {{ fetchResultData.htmlError }}
+          </n-alert>
+        </div>
+
+        <!-- Description -->
+        <div>
+          <div style="font-weight: 600; margin-bottom: 4px">页面描述 (description)</div>
+          <n-input :value="fetchResultData.description" readonly type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" />
+        </div>
+
+        <!-- Target URL -->
+        <div>
+          <div style="font-weight: 600; margin-bottom: 4px">抓取目标 URL</div>
+          <n-text depth="3" style="font-size: 12px; font-family: monospace">{{ fetchResultData.targetUrl }}</n-text>
+        </div>
+
+        <!-- Status summary -->
+        <n-space>
+          <n-tag :type="fetchResultData.htmlOk ? 'success' : 'error'" size="small">Title/Description: {{ fetchResultData.htmlOk ? '✓' : '✗' }}</n-tag>
+          <n-tag :type="fetchResultData.screenshotOk ? 'success' : 'error'" size="small">截图: {{ fetchResultData.screenshotOk ? '✓' : '✗' }}</n-tag>
+        </n-space>
+
+        <!-- Retry all -->
+        <n-space v-if="!fetchResultData.htmlOk || !fetchResultData.screenshotOk">
+          <n-button size="small" type="primary" :loading="fetchingMetadata === `${fetchResultData.accountId}-${fetchResultData.workerName}`" @click="fetchMetadataForItem(fetchResultData.accountId, fetchResultData.workerName); showFetchResult = false">
+            重新抓取全部
+          </n-button>
+        </n-space>
+      </div>
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showFetchResult = false">关闭</n-button>
+        </n-space>
+      </template>
+    </n-modal>
   </div>
 </template>
 
@@ -618,6 +678,19 @@ const imageUploadForm = ref<ImageUploadConfig>({
 });
 const imageUploadSaving = ref(false);
 const fetchingMetadata = ref<string>('');
+const showFetchResult = ref(false);
+const fetchResultData = ref<{
+  workerName: string;
+  title: string;
+  description: string;
+  screenshotUrl: string;
+  htmlOk: boolean;
+  htmlError: string;
+  screenshotOk: boolean;
+  screenshotError: string;
+  targetUrl: string;
+  accountId: number;
+} | null>(null);
 
 async function fetchAggregateConfig() {
   try {
@@ -804,11 +877,20 @@ async function fetchMetadataForItem(accountId: number, workerName: string) {
       item.description = data.item.description;
       item.screenshot = data.item.screenshot;
     }
-    if (data.item.title || data.item.description) {
-      message.success(`已抓取: ${data.item.title || workerName}`);
-    } else {
-      message.warning('抓取完成, 但未获取到 title/description (页面可能无 meta 标签)');
-    }
+    // Show a result modal with preview + status + retry buttons
+    fetchResultData.value = {
+      workerName,
+      title: data.item.title || '',
+      description: data.item.description || '',
+      screenshotUrl: data.item.screenshot_url || '',
+      htmlOk: data.status?.html_ok ?? !!data.item.title,
+      htmlError: data.status?.html_error || '',
+      screenshotOk: data.status?.screenshot_ok ?? !!data.item.screenshot,
+      screenshotError: data.status?.screenshot_error || '',
+      targetUrl: data.status?.target_url || '',
+      accountId,
+    };
+    showFetchResult.value = true;
   } catch (err: any) {
     message.error(err?.errorMessage || '抓取失败');
   } finally {
@@ -1091,7 +1173,6 @@ onMounted(async () => {
   padding: 8px 10px;
   border: 1px solid var(--n-border-color, #eee);
   border-radius: 6px;
-  background: var(--n-color, #fff);
   transition: all 0.15s ease;
 }
 .agg-select-item--selected {
