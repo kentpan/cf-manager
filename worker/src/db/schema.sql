@@ -54,3 +54,38 @@ CREATE TABLE IF NOT EXISTS catalog_sources (
   etag          TEXT,
   created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Free-domain provider registry (DNSHE, Namecheap, GoDaddy, Dynadot,
+-- Aliyun, Tencent, Namesilo, Porkbun, Cloudflare Registrar, ...).
+-- Each row describes *how* to talk to a registrar's API; account-level
+-- credentials live in domain_provider_accounts.
+CREATE TABLE IF NOT EXISTS domain_providers (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  code          TEXT NOT NULL UNIQUE,
+  name          TEXT NOT NULL,
+  api_base_url  TEXT NOT NULL,
+  auth_type     TEXT NOT NULL DEFAULT 'header',
+  capabilities  TEXT DEFAULT '',
+  doc_url       TEXT DEFAULT '',
+  regions       TEXT DEFAULT 'GLOBAL',
+  promo_url     TEXT DEFAULT '',
+  is_default    INTEGER DEFAULT 0,
+  enabled       INTEGER DEFAULT 1,
+  created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS domain_provider_accounts (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider_id   INTEGER NOT NULL REFERENCES domain_providers(id) ON DELETE CASCADE,
+  name          TEXT NOT NULL,
+  api_key       TEXT,
+  api_secret    TEXT,
+  api_user      TEXT,
+  is_active     INTEGER DEFAULT 1,
+  last_synced   DATETIME,
+  last_error    TEXT,
+  created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_domain_provider_accounts_provider ON domain_provider_accounts(provider_id);
