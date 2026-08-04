@@ -1,0 +1,271 @@
+name: Deploy to Cloudflare Pages (Auto on Push)
+
+# 自动部署：每次推送到 main / master 分支（或手动触发）时，
+# Cloudflare Pages 自动从 GitHub 仓库构建并部署。
+#
+# 适用场景：
+#   - 用户已 Fork 仓库到自己的 GitHub
+#   - 想要每次 git push 后自动更新 Pages 部署
+#   - 不依赖预构建的 cf-manager.zip，也不依赖 Composite Action
+#
+# 必须在 GitHub 仓库 Settings → Secrets and variables → Actions 中配置：
+#   CLOUDFLARE_API_TOKEN  — Cloudflare API Token（需 Pages:Edit 权限，推荐）
+#                          或 CLOUDFLARE_API_KEY + CLOUDFLARE_EMAIL（Global API Key，备用）
+#   ENCRYPTION_KEY        — 加密密钥（至少 16 位随机字符串，与本地 .env 一致）
+#   API_SECRET            — 管理界面登录密码（可选，留空则无需登录）
+#
+# 可选环境变量（在仓库 Settings → Environments → production 中按环境配置）：
+#   PROJECT_NAME          — Pages 项目名（默认 cfmgr）
+#   D1_DATABASE_NAME      — D1 数据库名（默认 cfmgr）
+#   KV_NAMESPACE_NAME      — KV 命名空间名（默认 cfmgr）
+#
+# 与 deploy-cf-secret.yml 的区别：
+#   - 本工作流在 git push 时自动触发（无需手动 Run workflow）
+#   - 不会删除/重建 D1/KV（full_wipe 默认 false，仅执行幂等迁移）
+#   - 更适合「持续部署」场景：每次代码变更自动上线
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      project_name:
+        description: 'Pages 项目名称'
+        required: false
+        default: 'cfmgr'
+        type: string
+      d1_database_name:
+        description: 'D1 数据库名称'
+        required: false
+        default: 'cfmgr'
+        type: string
+      kv_namespace_name:
+        description: 'KV 命名空间名称'
+        required: false
+        default: 'cfmgr'
+        type: string
+
+permissions:
+  contents: read
+  deployments: write
+
+concurrency:
+  group: pages-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || '' }}
+    env:
+      # 优先使用 API Token（细粒度，推荐）；fallback 到 Global API Key + Email
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
+      CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
+      ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+      API_SECRET: ${{ secrets.API_SECRET }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: |
+            frontend/package-lock.json
+            worker/package-lock.json
+
+      - name: Install wrangler
+        shell: bash
+        run: npm install -g wrangler
+
+      - name: Verify required secrets
+        shell: bash
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] && [ -z "$CLOUDFLARE_API_KEY" ]; then
+            echo "::error::Missing Cloudflare credentials. Configure either CLOUDFLARE_API_TOKEN (recommended) or CLOUDFLARE_API_KEY + CLOUDFLARE_EMAIL in Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          if [ -z "$ENCRYPTION_KEY" ]; then
+            echo "::error::Missing ENCRYPTION_KEY secret. Generate a strong random string (>= 16 chars) and add it to Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          echo "✓ Required secrets present."
+
+      - name: Resolve Cloudflare Account ID
+        shell: bash
+        run: |
+          ACCOUNT_ID=$(wrangler whoami 2>/dev/null | grep -oE '[0-9a-f]{32}' | head -1 || echo "")
+          if [ -z "$ACCOUNT_ID" ]; then
+            echo "::error::Could not resolve Cloudflare Account ID. Check your API token has the 'User Details: Read' permission."
+            exit 1
+          fi
+          echo "Resolved Account ID: $ACCOUNT_ID"
+          echo "CLOUDFLARE_ACCOUNT_ID=$ACCOUNT_ID" >> $GITHUB_ENV
+
+      - name: Resolve project / db / kv names
+        shell: bash
+        run: |
+          PROJECT_NAME="${{ inputs.project_name || 'cfmgr' }}"
+          DB_NAME="${{ inputs.d1_database_name || 'cfmgr' }}"
+          KV_NAME="${{ inputs.kv_namespace_name || 'cfmgr' }}"
+          echo "PROJECT_NAME=$PROJECT_NAME" >> $GITHUB_ENV
+          echo "DB_NAME=$DB_NAME" >> $GITHUB_ENV
+          echo "KV_NAME=$KV_NAME" >> $GITHUB_ENV
+          echo "Resolved: project=$PROJECT_NAME, d1=$DB_NAME, kv=$KV_NAME"
+
+      - name: Setup D1 database (create if missing)
+        shell: bash
+        run: |
+          # Use CF REST API to check whether the database already exists —
+          # avoids wrangler d1 list --json quirks across versions.
+          list_d1() {
+            if [ -n "$CLOUDFLARE_API_TOKEN" ]; then
+              curl -s -X GET "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database" \
+                -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+            else
+              curl -s -X GET "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database" \
+                -H "X-Auth-Email: $CLOUDFLARE_EMAIL" \
+                -H "X-Auth-Key: $CLOUDFLARE_API_KEY"
+            fi
+          }
+          DB_LIST=$(list_d1)
+          DB_ID=$(echo "$DB_LIST" | jq -r --arg name "$DB_NAME" '.result[]? | select(.name==$name) | .uuid' 2>/dev/null | head -1)
+
+          if [ -z "$DB_ID" ]; then
+            echo "Creating D1 database: $DB_NAME"
+            wrangler d1 create "$DB_NAME" 2>&1 | tee /tmp/d1-create.log
+            DB_ID=$(grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' /tmp/d1-create.log | head -1)
+            if [ -z "$DB_ID" ]; then
+              # Some wrangler versions print only "database_id = ..." in toml format
+              DB_ID=$(grep -oE 'database_id = "([^"]+)"' /tmp/d1-create.log | sed -E 's/database_id = "([^"]+)"/\1/' | head -1)
+            fi
+            echo "Created with ID: $DB_ID"
+            echo "Initializing database schema..."
+            wrangler d1 execute "$DB_NAME" --file=worker/src/db/schema.sql --remote
+          else
+            echo "Database already exists: $DB_NAME (ID: $DB_ID)"
+            # Run CREATE TABLE IF NOT EXISTS — safe on existing tables
+            wrangler d1 execute "$DB_NAME" --file=worker/src/db/schema.sql --remote
+          fi
+
+          # Column-level migrations (idempotent via INSERT OR IGNORE / || true)
+          echo "=== Running column-level migrations ==="
+          while IFS= read -r line; do
+            line=$(echo "$line" | sed 's/--.*$//' | xargs)
+            [ -z "$line" ] && continue
+            wrangler d1 execute "$DB_NAME" --command="$line" --remote 2>/dev/null || true
+          done < worker/src/db/migrations.sql
+
+          echo "DATABASE_ID=$DB_ID" >> $GITHUB_ENV
+
+      - name: Setup KV namespace (create if missing)
+        shell: bash
+        run: |
+          list_kv() {
+            if [ -n "$CLOUDFLARE_API_TOKEN" ]; then
+              curl -s -X GET "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/storage/kv/namespaces" \
+                -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
+            else
+              curl -s -X GET "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/storage/kv/namespaces" \
+                -H "X-Auth-Email: $CLOUDFLARE_EMAIL" \
+                -H "X-Auth-Key: $CLOUDFLARE_API_KEY"
+            fi
+          }
+          KV_LIST_FULL=$(list_kv)
+          KV_ID=$(echo "$KV_LIST_FULL" | jq -r --arg name "$KV_NAME" '.result[]? | select(.title==$name) | .id' 2>/dev/null | head -1)
+          if [ -z "$KV_ID" ]; then
+            echo "Creating KV namespace: $KV_NAME"
+            wrangler kv namespace create "$KV_NAME" 2>&1 | tee /tmp/kv-create.log
+            KV_ID=$(grep -oE 'id = "([^"]+)"' /tmp/kv-create.log | sed -E 's/id = "([^"]+)"/\1/' | head -1)
+            if [ -z "$KV_ID" ]; then
+              KV_ID=$(grep -oE '[0-9a-f]{32}' /tmp/kv-create.log | head -1)
+            fi
+          fi
+          if [ -z "$KV_ID" ]; then
+            echo "::error::Could not create / find KV namespace. Create it manually in the dashboard and add the ID as a repository variable."
+            exit 1
+          fi
+          echo "KV namespace ready: $KV_NAME (ID: $KV_ID)"
+          echo "KV_ID=$KV_ID" >> $GITHUB_ENV
+
+      - name: Update wrangler.toml with resolved IDs
+        working-directory: worker
+        shell: bash
+        run: |
+          sed -i "s/database_id = \".*\"/database_id = \"${DATABASE_ID}\"/" wrangler.toml
+          sed -i "s/id = \"YOUR_KV_NAMESPACE_ID\"/id = \"${KV_ID}\"/" wrangler.toml
+          sed -i "s/^name = \".*\"/name = \"${PROJECT_NAME}\"/" wrangler.toml
+          echo "=== Final wrangler.toml ==="
+          cat wrangler.toml
+
+      - name: Install worker dependencies
+        working-directory: worker
+        shell: bash
+        run: npm install
+
+      - name: Build frontend + worker bundle
+        working-directory: worker
+        shell: bash
+        run: node build.js
+
+      - name: Create Pages project if not exists
+        shell: bash
+        run: |
+          if wrangler pages project list 2>/dev/null | grep -qF "$PROJECT_NAME"; then
+            echo "Pages project '$PROJECT_NAME' already exists"
+          else
+            wrangler pages project create "$PROJECT_NAME" --production-branch main
+            echo "Created Pages project '$PROJECT_NAME'"
+          fi
+
+      - name: Configure secrets on Pages project
+        shell: bash
+        run: |
+          wrangler pages secret put ENCRYPTION_KEY --project-name "$PROJECT_NAME" <<< "$ENCRYPTION_KEY"
+          if [ -n "$API_SECRET" ]; then
+            wrangler pages secret put API_SECRET --project-name "$PROJECT_NAME" <<< "$API_SECRET"
+          fi
+          echo "✓ Secrets configured"
+
+      - name: Deploy to Cloudflare Pages
+        working-directory: worker
+        shell: bash
+        run: |
+          # wrangler.toml already has pages_build_output_dir = "public"
+          wrangler pages deploy --project-name "$PROJECT_NAME" --branch main --commit-dirty
+
+          # Resolve the real *.pages.dev subdomain via the CF API
+          if [ -n "$CLOUDFLARE_API_TOKEN" ]; then
+            PROJECT_DETAILS=$(curl -s -X GET "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/$PROJECT_NAME" \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN")
+          else
+            PROJECT_DETAILS=$(curl -s -X GET "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/$PROJECT_NAME" \
+              -H "X-Auth-Email: $CLOUDFLARE_EMAIL" \
+              -H "X-Auth-Key: $CLOUDFLARE_API_KEY")
+          fi
+          RAW_SUBDOMAIN=$(echo "$PROJECT_DETAILS" | jq -r '.result.subdomain // empty' | tr -d '\r\n')
+          case "$RAW_SUBDOMAIN" in
+            *.pages.dev)  PROJECT_SUBDOMAIN="${RAW_SUBDOMAIN%.pages.dev}" ;;
+            *.pages.dev/) PROJECT_SUBDOMAIN="${RAW_SUBDOMAIN%.pages.dev/}" ;;
+            *)            PROJECT_SUBDOMAIN="${RAW_SUBDOMAIN:-$PROJECT_NAME}" ;;
+          esac
+          DEPLOY_URL="https://${PROJECT_SUBDOMAIN}.pages.dev/admin/"
+          echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_ENV
+          echo "::notice::Deployment URL: $DEPLOY_URL"
+
+      - name: Deployment summary
+        if: always()
+        shell: bash
+        run: |
+          echo "## Cloudflare Pages 自动部署 ${{ job.status == 'success' && '✅' || '❌' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| 配置项 | 值 |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-----|" >> $GITHUB_STEP_SUMMARY
+          echo "| Pages 项目 | $PROJECT_NAME |" >> $GITHUB_STEP_SUMMARY
+          echo "| D1 数据库 | $DB_NAME ($DATABASE_ID) |" >> $GITHUB_STEP_SUMMARY
+          echo "| KV 命名空间 | $KV_NAME ($KV_ID) |" >> $GITHUB_STEP_SUMMARY
+          echo "| 触发分支 | ${{ github.ref_name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 触发方式 | ${{ github.event_name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 访问地址 | ${{ env.DEPLOY_URL || '(部署失败)' }} |" >> $GITHUB_STEP_SUMMARY
