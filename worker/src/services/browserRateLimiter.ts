@@ -1,4 +1,4 @@
-﻿import type { Env } from '../types';
+import type { Env } from '../types';
 import { getActiveAccountsByFeature, setExhausted, clearExhausted, getQuotaByAccount, getSetting, setSetting, type Account } from '../db/models';
 import { logger } from './logger';
 
@@ -8,8 +8,9 @@ const TOKEN_INTERVAL_MS = 10_000;
 /** KV 中每个账户令牌桶状态的 key 前缀。 */
 const KV_TOKEN_PREFIX = 'browser_token:';
 
-/** KV 令牌桶条目 TTL，设为冷却窗口的 2 倍以留出余量。 */
-const KV_TOKEN_TTL_SEC = Math.ceil((TOKEN_INTERVAL_MS * 2) / 1000);
+/** KV 令牌桶条目 TTL。Cloudflare KV 的 expirationTtl 最小值是 60 秒，
+ * 所以即使令牌桶冷却窗口只有 20 秒，TTL 也必须 >= 60。设为 120 留余量。 */
+const KV_TOKEN_TTL_SEC = 120;
 
 /** D1 兜底时存储 lastUsedAt map 的 app_settings key。 */
 const D1_LAST_USED_KEY = 'browser_token_last_used';

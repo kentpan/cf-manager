@@ -317,18 +317,23 @@ router.post('/aggregate-homepage/fetch-metadata', async (req, res, next: NextFun
       targetUrl = `https://${targetUrl}`;
     }
 
-    // Find a Cloudflare account with the browser_render feature enabled so
-    // we can call the browser-render API. We need the account's account_id
-    // (Cloudflare account ID, not our DB id) to build the endpoint URL.
-    const { getActiveAccountsByFeature } = await import('../models/account');
-    const browserAccounts = getActiveAccountsByFeature('browser_render');
-    if (browserAccounts.length === 0) {
-      res.status(400).json({ error: { code: 'NO_BROWSER_ACCOUNT', message: '没有启用浏览器渲染功能的账号。请在「账号管理」中为某个 Cloudflare 账号启用 browser_render 功能。' } });
+    // Find the Cloudflare account that OWNS this project (by account_id)
+    // so we use that account's browser-render quota, not a random one.
+    // This avoids 429 rate-limit errors when one account is hammered by
+    // all projects' screenshot captures.
+    const { getAccountById } = await import('../models/account');
+    const projectAccount = getAccountById(item.account_id);
+    if (!projectAccount || !projectAccount.account_id) {
+      res.status(400).json({ error: { code: 'ACCOUNT_NOT_FOUND', message: '项目所属账号不存在或未配置 account_id' } });
       return;
     }
-    // Use the first browser-render-enabled account (round-robin / quota
-    // management is handled by the existing browser-render service).
-    const browserAccount = browserAccounts[0];
+    // Check that the account has browser_render feature enabled
+    const { hasFeature } = await import('../models/account');
+    if (!hasFeature(projectAccount, 'browser_render')) {
+      res.status(400).json({ error: { code: 'NO_BROWSER_FEATURE', message: `账号「${projectAccount.name}」未启用 browser_render 功能，请在「账号管理」中开启` } });
+      return;
+    }
+    const browserAccount = projectAccount;
 
     let pageTitle = '';
     let pageDescription = '';

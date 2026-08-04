@@ -159,7 +159,7 @@
           item-responsive
           style="width: 100%"
         >
-          <n-gi v-for="p in filteredProjects" :key="`${p.account_id}-${p.id}`" style="padding:16px 6px 16px 0;">
+          <n-gi v-for="p in filteredProjects" :key="`${p.account_id}-${p.id}`">
             <div class="pages-card">
               <div class="pages-card__head">
                 <div class="pages-card__title-row">
@@ -352,7 +352,7 @@ const sortOptions = [
 ];
 
 const accountOptions = computed(() => {
-  if (!summary.value) return [];
+  if (!summary.value || !summary.value.accounts) return [];
   const seen = new Map<number, string>();
   for (const a of summary.value.accounts) {
     if (!seen.has(a.account_id)) seen.set(a.account_id, a.account_name);
@@ -390,7 +390,7 @@ const groupedProjects = computed(() => {
     }
     groups.get(p.account_id)!.projects.push(p);
   }
-  if (summary.value) {
+  if (summary.value && summary.value.accounts) {
     for (const acc of summary.value.accounts) {
       if (acc.error && !groups.has(acc.account_id)) {
         groups.set(acc.account_id, {
@@ -502,7 +502,7 @@ onMounted(() => {
   width: 100%;
   max-height: calc(100vh - 280px);
   overflow-y: auto;
-  padding: 30px 4px 30px 0;
+  padding-right: 4px;
 }
 
 .stat-card {
@@ -517,6 +517,7 @@ onMounted(() => {
   flex-direction: column;
   gap: 10px;
   transition: all 0.15s ease;
+  background-color: var(--n-color, #fff);
   height: 100%;
 }
 .pages-card:hover {

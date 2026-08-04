@@ -1,8 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from '../types';
-import { getSetting, setSetting } from '../db/models';
+import { getSetting, setSetting, getAccountById, hasFeature } from '../db/models';
 import { getAuthHeaders, cfFetch } from '../services/cfApi';
-import { getActiveAccountsByFeature } from '../db/models';
 import type { Account } from '../db/models';
 import { VERSION, GIT_COMMIT } from '../version';
 
@@ -204,12 +203,19 @@ app.post('/aggregate-homepage/fetch-metadata', async (c) => {
     targetUrl = `https://${targetUrl}`;
   }
 
-  // Find a Cloudflare account with browser_render feature
-  const browserAccounts = await getActiveAccountsByFeature(c.env.DB, 'browser_render');
-  if (browserAccounts.length === 0) {
-    return c.json({ error: { code: 'NO_BROWSER_ACCOUNT', message: '没有启用浏览器渲染功能的账号。请在「账号管理」中为某个 Cloudflare 账号启用 browser_render 功能。' } }, 400);
+  // Find the Cloudflare account that OWNS this project (by account_id)
+  // so we use that account's browser-render quota, not a random one.
+  // This avoids 429 rate-limit errors when one account is hammered by
+  // all projects' screenshot captures.
+  const { getAccountById, hasFeature } = await import('../db/models');
+  const projectAccount = await getAccountById(c.env.DB, item.account_id);
+  if (!projectAccount || !projectAccount.account_id) {
+    return c.json({ error: { code: 'ACCOUNT_NOT_FOUND', message: '项目所属账号不存在或未配置 account_id' } }, 400);
   }
-  const browserAccount = browserAccounts[0];
+  if (!hasFeature(projectAccount, 'browser_render')) {
+    return c.json({ error: { code: 'NO_BROWSER_FEATURE', message: `账号「${projectAccount.name}」未启用 browser_render 功能，请在「账号管理」中开启` } }, 400);
+  }
+  const browserAccount = projectAccount;
 
   let pageTitle = '';
   let pageDescription = '';

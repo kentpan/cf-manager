@@ -339,6 +339,19 @@ async function checkR2Available() {
 
 async function onAccountChange() {
   await checkR2Available();
+  // Clear all selected items from the previous account so we don't
+  // accidentally call APIs with the old account's resource IDs against
+  // the new account (e.g. D1 database UUID from account A queried via
+  // account B's credentials → 404 "database could not be found").
+  selectedKvNs.value = null;
+  kvKeys.value = [];
+  kvCursor.value = '';
+  selectedD1Db.value = null;
+  d1Tables.value = [];
+  d1Result.value = null;
+  selectedR2Bucket.value = null;
+  r2Objects.value = [];
+  r2Prefix.value = '';
   if (activeTab.value === 'kv') loadKvNamespaces();
   else if (activeTab.value === 'd1') loadD1Databases();
   else if (activeTab.value === 'r2') loadR2Buckets();
