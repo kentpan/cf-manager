@@ -48,6 +48,82 @@
       </n-space>
     </n-card>
 
+    <!-- baseURL 配置 -->
+    <n-card title="前端访问路径 (BASE_URL)" size="small" style="margin-bottom: 16px">
+      <n-space vertical>
+        <n-alert v-if="settings.is_cloudflare_edge" type="warning" :bordered="false">
+          <n-space :size="4" vertical>
+            <strong>Cloudflare 边缘运行时检测到</strong>
+            <span style="font-size: 12px">
+              Cloudflare Pages 部署无法在运行时修改 .env。请前往 Cloudflare Pages 项目 →
+              Settings → Environment variables → 修改 <code>BASE_URL</code> 变量,
+              然后 Redeploy 让新值生效。
+            </span>
+          </n-space>
+        </n-alert>
+        <n-input-group>
+          <n-input
+            v-model:value="baseUrlInput"
+            :disabled="settings.is_cloudflare_edge || !settings.env_writable"
+            placeholder="/ (默认根路径) 或 /admin/ (后台路径)"
+            style="flex: 1"
+          />
+          <n-button
+            type="primary"
+            :loading="baseUrlSaving"
+            :disabled="settings.is_cloudflare_edge || !settings.env_writable"
+            @click="saveBaseUrl"
+          >保存</n-button>
+        </n-input-group>
+        <n-text depth="3" style="font-size: 12px">
+          <strong>当前值:</strong> <code>{{ settings.base_url || '/' }}</code>
+          <span v-if="!settings.env_writable && !settings.is_cloudflare_edge" style="color: #e03050; margin-left: 8px">
+            ⚠️ .env 不可写, 请手动编辑 cf-manager/.env 后重启后端
+          </span>
+        </n-text>
+        <n-text depth="3" style="font-size: 12px">
+          修改后需<strong>重启后端</strong>让 vue-router 加载新路径。
+          默认 <code>/</code> 为根路径访问, 设为 <code>/admin/</code> 可隐藏后台入口 (前端 SPA 从 /admin/ 加载)。
+        </n-text>
+      </n-space>
+    </n-card>
+
+    <!-- 聚合首页配置 -->
+    <n-card title="聚合首页 (作品集 / Demo 展示)" size="small" style="margin-bottom: 16px">
+      <n-space vertical>
+        <n-space align="center" justify="space-between">
+          <n-space align="center">
+            <n-switch :value="aggregateConfig.enabled" @update:value="(v: boolean) => toggleAggregateHomepage(v)" :loading="aggregateSaving" />
+            <n-text :depth="aggregateConfig.enabled ? 1 : 3">{{ aggregateConfig.enabled ? '已启用' : '已关闭' }}</n-text>
+          </n-space>
+          <n-space>
+            <n-button size="small" :disabled="!aggregateConfig.enabled" @click="openAggregateSelectionModal">选择展示项目</n-button>
+            <n-button size="small" :disabled="!aggregateConfig.enabled" @click="openAggregateStyleModal">主题风格</n-button>
+            <n-button size="small" tag="a" :href="'/'" target="_blank" :disabled="!aggregateConfig.enabled">预览</n-button>
+          </n-space>
+        </n-space>
+        <n-alert :type="aggregateConfig.enabled ? 'success' : 'info'" :bordered="false">
+          <n-space :size="4" vertical>
+            <span>
+              <strong>{{ aggregateConfig.enabled ? '已启用' : '未启用' }}</strong>
+              · 主题: <code>{{ aggregateConfig.theme === 'brutalism' ? '新粗野主义' : '默认' }}</code>
+              · 标题: <code>{{ aggregateConfig.title }}</code>
+              · 展示项目: {{ aggregateConfig.items.length }} 个
+            </span>
+            <span style="font-size: 12px">
+              启用后, 访问根路径 <code>/</code> 会显示一个无需鉴权的公开作品集页面,
+              展示选中的 Workers + Pages 项目 (自定义域名优先作为链接)。
+              关闭后, 根路径自动跳转到后台管理首页。
+            </span>
+          </n-space>
+        </n-alert>
+        <n-text depth="3" style="font-size: 12px">
+          💡 聚合首页是<strong>公开页面</strong> (无需 API_SECRET 鉴权),
+          适合作为项目作品集 / Demo 展示列表页对外展示。可在「主题风格」中切换默认 / 新粗野主义两种视觉风格。
+        </n-text>
+      </n-space>
+    </n-card>
+
     <n-card title="缓存管理" size="small" style="margin-bottom: 16px">
       <n-space>
         <n-button type="warning" @click="handleClearCache" :loading="clearing">清除缓存</n-button>
@@ -223,13 +299,127 @@
         </n-spin>
       </n-drawer-content>
     </n-drawer>
+
+    <!-- 聚合首页 - 选择展示项目 Modal -->
+    <n-modal v-model:show="showAggregateSelection" preset="card" title="选择展示项目" style="width: 820px; max-width: 95vw">
+      <n-spin :show="aggregateLoadingWorkers">
+        <div style="margin-bottom: 12px">
+          <n-text depth="3" style="font-size: 12px">
+            勾选要展示在公开作品集首页的 Workers + Pages 项目。勾选后可拖拽排序 (↑↓),
+            排序结果即为首页展示顺序。自定义域名将自动作为链接 (优先于 workers.dev / pages.dev)。
+          </n-text>
+        </div>
+        <div v-for="group in aggregateWorkersByAccount" :key="group.account_id" style="margin-bottom: 16px">
+          <n-divider title-placement="left" style="margin: 8px 0">
+            <n-space :size="4" align="center">
+              <n-icon :component="PeopleOutline" :size="14" />
+              <span style="font-size: 13px">{{ group.account_name }}</span>
+              <n-tag size="tiny" round>{{ group.workers.length }} 个项目</n-tag>
+            </n-space>
+          </n-divider>
+          <div class="agg-select-list">
+            <div
+              v-for="w in group.workers"
+              :key="`${group.account_id}-${w.name}`"
+              :class="['agg-select-item', { 'agg-select-item--selected': isAggregateItemSelected(group.account_id, w.name) }]"
+            >
+              <div class="agg-select-item__main">
+                <n-checkbox
+                  :checked="isAggregateItemSelected(group.account_id, w.name)"
+                  @update:checked="(v: boolean) => toggleAggregateItem(group.account_id, w.name, w.type, v)"
+                />
+                <div class="agg-select-item__info">
+                  <div class="agg-select-item__name">
+                    <n-icon :component="w.type === 'pages' ? DocumentTextOutline : CubeOutline" :size="14" />
+                    <span>{{ w.name }}</span>
+                    <n-tag size="tiny" :bordered="false" :type="w.type === 'pages' ? 'info' : 'success'">{{ w.type }}</n-tag>
+                  </div>
+                  <div class="agg-select-item__domain">
+                    {{ (w.domains && w.domains[0]) || (w.type === 'pages' ? `${w.name}.pages.dev` : `${w.name}.workers.dev`) }}
+                  </div>
+                </div>
+              </div>
+              <div class="agg-select-item__actions" v-if="isAggregateItemSelected(group.account_id, w.name)">
+                <n-button size="tiny" quaternary @click="moveAggregateItem(group.account_id, w.name, -1)">↑</n-button>
+                <n-button size="tiny" quaternary @click="moveAggregateItem(group.account_id, w.name, 1)">↓</n-button>
+                <n-input
+                  size="tiny"
+                  :value="getAggregateDisplayName(group.account_id, w.name)"
+                  @update:value="(v: string) => setAggregateDisplayName(group.account_id, w.name, v)"
+                  placeholder="自定义展示名"
+                  style="width: 140px"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+        <n-empty v-if="aggregateWorkersByAccount.length === 0 && !aggregateLoadingWorkers" description="暂无 Workers + Pages 项目, 请先在「账号管理」添加 Cloudflare 账号" />
+      </n-spin>
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showAggregateSelection = false">关闭</n-button>
+          <n-button type="primary" :loading="aggregateSaving" @click="saveAggregateSelection">保存选择</n-button>
+        </n-space>
+      </template>
+    </n-modal>
+
+    <!-- 聚合首页 - 主题风格 Modal -->
+    <n-modal v-model:show="showAggregateStyle" preset="card" title="主题风格" style="width: 620px; max-width: 95vw">
+      <n-space vertical>
+        <div>
+          <n-text style="font-weight: 500">标题</n-text>
+          <n-input v-model:value="aggregateStyleForm.title" placeholder="如 我的作品集 / Projects" style="margin-top: 4px" />
+        </div>
+        <div>
+          <n-text style="font-weight: 500">副标题</n-text>
+          <n-input v-model:value="aggregateStyleForm.subtitle" placeholder="如 Projects & Demos" style="margin-top: 4px" />
+        </div>
+        <div>
+          <n-text style="font-weight: 500">主题风格</n-text>
+          <div class="theme-preview-grid" style="margin-top: 8px">
+            <button
+              :class="['theme-preview-card', { 'theme-preview-card--active': aggregateStyleForm.theme === 'default' }]"
+              @click="aggregateStyleForm.theme = 'default'"
+            >
+              <div class="theme-preview-card__preview theme-preview-card__preview--default">
+                <div class="theme-preview-card__bar" style="background: linear-gradient(135deg, #18a058, #36ad6a)"></div>
+                <div class="theme-preview-card__bar" style="background: #f0f0f0; height: 6px"></div>
+                <div class="theme-preview-card__bar" style="background: #f0f0f0; height: 6px; width: 60%"></div>
+              </div>
+              <div class="theme-preview-card__label">默认 (绿色卡片)</div>
+            </button>
+            <button
+              :class="['theme-preview-card', { 'theme-preview-card--active': aggregateStyleForm.theme === 'brutalism' }]"
+              @click="aggregateStyleForm.theme = 'brutalism'"
+            >
+              <div class="theme-preview-card__preview theme-preview-card__preview--brutalism">
+                <div class="theme-preview-card__bar" style="background: #000; height: 12px; border: 2px solid #000"></div>
+                <div class="theme-preview-card__bar" style="background: #fff; height: 8px; border: 2px solid #000"></div>
+                <div class="theme-preview-card__bar" style="background: #ffe500; height: 8px; border: 2px solid #000; width: 60%"></div>
+              </div>
+              <div class="theme-preview-card__label">新粗野主义 (黑白+黄色)</div>
+            </button>
+          </div>
+          <n-text depth="3" style="font-size: 12px; display: block; margin-top: 8px">
+            💡 两种风格均不含紫色系配色。新粗野主义使用粗黑边框 + 高饱和黄色/黑色色块。
+          </n-text>
+        </div>
+      </n-space>
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showAggregateStyle = false">取消</n-button>
+          <n-button type="primary" :loading="aggregateSaving" @click="saveAggregateStyle">保存</n-button>
+        </n-space>
+      </template>
+    </n-modal>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, h, onMounted } from 'vue';
-import { NButton, NSpace, NTag, NSwitch, useMessage } from 'naive-ui';
+import { NButton, NSpace, NTag, NSwitch, NIcon, NCheckbox, NAlert, NDivider, useMessage } from 'naive-ui';
 import type { DataTableColumns } from 'naive-ui';
+import { PeopleOutline, CubeOutline, DocumentTextOutline } from '@vicons/ionicons5';
 import { settingsApi } from '../api/settings';
 import { tasksApi } from '../api/storage';
 import apiClient from '../api/client';
@@ -261,6 +451,7 @@ async function fetchSettings() {
     settings.value = data;
     proxyUrl.value = data.proxy_url || '';
     proxyEnabled.value = !!data.proxy_enabled;
+    baseUrlInput.value = data.base_url || '/';
   } catch {
     settings.value = {};
   } finally {
@@ -315,6 +506,200 @@ async function handleClearCache() {
     message.success('缓存已清除');
   } finally {
     clearing.value = false;
+  }
+}
+
+// ============ baseURL config ============
+const baseUrlInput = ref('/');
+const baseUrlSaving = ref(false);
+
+async function saveBaseUrl() {
+  if (!baseUrlInput.value) baseUrlInput.value = '/';
+  baseUrlSaving.value = true;
+  try {
+    const { data } = await apiClient.put('/settings/base-url', { base_url: baseUrlInput.value });
+    message.success(data.message || 'BASE_URL 已保存, 请重启后端生效');
+    await fetchSettings();
+  } catch (err: any) {
+    const msg = err?.response?.data?.error?.message || err?.message || '保存失败';
+    message.error(msg);
+  } finally {
+    baseUrlSaving.value = false;
+  }
+}
+
+// ============ Aggregate homepage config ============
+interface AggregateItem {
+  account_id: number;
+  worker_name: string;
+  type: 'worker' | 'pages';
+  display_name: string;
+  sort_order: number;
+  custom_url?: string;
+}
+interface AggregateConfig {
+  enabled: boolean;
+  theme: 'default' | 'brutalism';
+  title: string;
+  subtitle: string;
+  items: AggregateItem[];
+}
+const aggregateConfig = ref<AggregateConfig>({
+  enabled: false, theme: 'default', title: '作品集', subtitle: 'Projects & Demos', items: [],
+});
+const aggregateSaving = ref(false);
+const showAggregateSelection = ref(false);
+const showAggregateStyle = ref(false);
+const aggregateLoadingWorkers = ref(false);
+// All Workers + Pages grouped by account (loaded when the selection modal opens)
+const aggregateWorkersByAccount = ref<Array<{ account_id: number; account_name: string; workers: Array<{ name: string; type: 'worker' | 'pages'; domains: string[] }> }>>([]);
+// Local working copy of selected items while the selection modal is open
+const aggregateSelectionDraft = ref<AggregateItem[]>([]);
+const aggregateStyleForm = ref<{ title: string; subtitle: string; theme: 'default' | 'brutalism' }>({
+  title: '作品集', subtitle: 'Projects & Demos', theme: 'default',
+});
+
+async function fetchAggregateConfig() {
+  try {
+    const { data } = await apiClient.get('/settings/aggregate-homepage');
+    aggregateConfig.value = {
+      enabled: !!data.enabled,
+      theme: data.theme === 'brutalism' ? 'brutalism' : 'default',
+      title: data.title || '作品集',
+      subtitle: data.subtitle || 'Projects & Demos',
+      items: Array.isArray(data.items) ? data.items : [],
+    };
+  } catch {
+    // Use defaults
+  }
+}
+
+async function toggleAggregateHomepage(enabled: boolean) {
+  aggregateSaving.value = true;
+  try {
+    const { data } = await apiClient.put('/settings/aggregate-homepage', { enabled });
+    aggregateConfig.value = data.config;
+    message.success(enabled ? '聚合首页已启用, 访问 / 查看效果' : '聚合首页已关闭, / 将跳转后台');
+  } catch (err: any) {
+    message.error(err?.errorMessage || '切换失败');
+  } finally {
+    aggregateSaving.value = false;
+  }
+}
+
+async function openAggregateSelectionModal() {
+  showAggregateSelection.value = true;
+  // Clone the current config items into a working draft
+  aggregateSelectionDraft.value = aggregateConfig.value.items.map(it => ({ ...it }));
+  // Load all Workers + Pages grouped by account
+  aggregateLoadingWorkers.value = true;
+  try {
+    const { data } = await apiClient.get('/workers');
+    const all = Array.isArray(data) ? data : [];
+    // Group by account_id
+    const groupMap = new Map<number, { account_id: number; account_name: string; workers: Array<{ name: string; type: 'worker' | 'pages'; domains: string[] }> }>();
+    for (const w of all) {
+      const aid = w.cfAccountId || w.account_id;
+      if (!groupMap.has(aid)) {
+        groupMap.set(aid, { account_id: aid, account_name: w.accountName || `账号 ${aid}`, workers: [] });
+      }
+      groupMap.get(aid)!.workers.push({
+        name: w.name,
+        type: w.type === 'pages' ? 'pages' : 'worker',
+        domains: w.domains || [],
+      });
+    }
+    aggregateWorkersByAccount.value = Array.from(groupMap.values());
+  } catch (err: any) {
+    message.error(err?.errorMessage || '加载 Workers + Pages 失败');
+    aggregateWorkersByAccount.value = [];
+  } finally {
+    aggregateLoadingWorkers.value = false;
+  }
+}
+
+function isAggregateItemSelected(accountId: number, workerName: string): boolean {
+  return aggregateSelectionDraft.value.some(it => it.account_id === accountId && it.worker_name === workerName);
+}
+
+function toggleAggregateItem(accountId: number, workerName: string, type: 'worker' | 'pages', checked: boolean) {
+  if (checked) {
+    if (!isAggregateItemSelected(accountId, workerName)) {
+      aggregateSelectionDraft.value.push({
+        account_id: accountId,
+        worker_name: workerName,
+        type,
+        display_name: workerName,
+        sort_order: aggregateSelectionDraft.value.length,
+      });
+    }
+  } else {
+    aggregateSelectionDraft.value = aggregateSelectionDraft.value.filter(it => !(it.account_id === accountId && it.worker_name === workerName));
+    // Re-index sort_order
+    aggregateSelectionDraft.value.forEach((it, idx) => { it.sort_order = idx; });
+  }
+}
+
+function moveAggregateItem(accountId: number, workerName: string, direction: -1 | 1) {
+  const idx = aggregateSelectionDraft.value.findIndex(it => it.account_id === accountId && it.worker_name === workerName);
+  if (idx < 0) return;
+  const newIdx = idx + direction;
+  if (newIdx < 0 || newIdx >= aggregateSelectionDraft.value.length) return;
+  const tmp = aggregateSelectionDraft.value[idx];
+  aggregateSelectionDraft.value[idx] = aggregateSelectionDraft.value[newIdx];
+  aggregateSelectionDraft.value[newIdx] = tmp;
+  // Re-index sort_order
+  aggregateSelectionDraft.value.forEach((it, i) => { it.sort_order = i; });
+}
+
+function getAggregateDisplayName(accountId: number, workerName: string): string {
+  const it = aggregateSelectionDraft.value.find(x => x.account_id === accountId && x.worker_name === workerName);
+  return it?.display_name || workerName;
+}
+
+function setAggregateDisplayName(accountId: number, workerName: string, value: string) {
+  const it = aggregateSelectionDraft.value.find(x => x.account_id === accountId && x.worker_name === workerName);
+  if (it) it.display_name = value || workerName;
+}
+
+async function saveAggregateSelection() {
+  aggregateSaving.value = true;
+  try {
+    const { data } = await apiClient.put('/settings/aggregate-homepage', { items: aggregateSelectionDraft.value });
+    aggregateConfig.value = data.config;
+    message.success(`已保存 ${aggregateSelectionDraft.value.length} 个展示项目`);
+    showAggregateSelection.value = false;
+  } catch (err: any) {
+    message.error(err?.errorMessage || '保存失败');
+  } finally {
+    aggregateSaving.value = false;
+  }
+}
+
+function openAggregateStyleModal() {
+  aggregateStyleForm.value = {
+    title: aggregateConfig.value.title,
+    subtitle: aggregateConfig.value.subtitle,
+    theme: aggregateConfig.value.theme,
+  };
+  showAggregateStyle.value = true;
+}
+
+async function saveAggregateStyle() {
+  aggregateSaving.value = true;
+  try {
+    const { data } = await apiClient.put('/settings/aggregate-homepage', {
+      title: aggregateStyleForm.value.title,
+      subtitle: aggregateStyleForm.value.subtitle,
+      theme: aggregateStyleForm.value.theme,
+    });
+    aggregateConfig.value = data.config;
+    message.success('主题风格已保存');
+    showAggregateStyle.value = false;
+  } catch (err: any) {
+    message.error(err?.errorMessage || '保存失败');
+  } finally {
+    aggregateSaving.value = false;
   }
 }
 
@@ -571,6 +956,7 @@ async function deleteSource(s: any) {
 
 onMounted(async () => {
   await fetchSettings();
+  fetchAggregateConfig();
   if (!isWorkerPlatform.value) {
     fetchTasks();
   }
@@ -578,3 +964,103 @@ onMounted(async () => {
   loadSources();
 });
 </script>
+
+<style scoped>
+.agg-select-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.agg-select-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--n-border-color, #eee);
+  border-radius: 6px;
+  background: var(--n-color, #fff);
+  transition: all 0.15s ease;
+}
+.agg-select-item--selected {
+  border-color: #18a058;
+  background: rgba(24, 160, 88, 0.04);
+}
+.agg-select-item__main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.agg-select-item__info {
+  min-width: 0;
+}
+.agg-select-item__name {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--n-text-color, #333);
+}
+.agg-select-item__domain {
+  font-size: 11px;
+  color: var(--n-text-color-3, #999);
+  margin-top: 2px;
+  font-family: monospace;
+}
+.agg-select-item__actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Theme preview cards */
+.theme-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+.theme-preview-card {
+  text-align: left;
+  padding: 0;
+  border: 2px solid var(--n-border-color, #ddd);
+  border-radius: 8px;
+  background: var(--n-color, #fff);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  overflow: hidden;
+}
+.theme-preview-card:hover {
+  border-color: #18a058;
+}
+.theme-preview-card--active {
+  border-color: #18a058;
+  box-shadow: 0 0 0 2px rgba(24, 160, 88, 0.2);
+}
+.theme-preview-card__preview {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  height: 80px;
+}
+.theme-preview-card__preview--default {
+  background: linear-gradient(135deg, #f8fef9, #fff);
+}
+.theme-preview-card__preview--brutalism {
+  background: #fff;
+  border-bottom: 2px solid #000;
+}
+.theme-preview-card__bar {
+  border-radius: 3px;
+}
+.theme-preview-card__label {
+  padding: 6px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--n-text-color, #555);
+  background: var(--n-card-color, #fafafa);
+  border-top: 1px solid var(--n-border-color, #eee);
+}
+</style>

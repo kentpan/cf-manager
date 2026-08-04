@@ -312,7 +312,7 @@
 
 <script setup lang="ts">
 import { ref, h, computed, onMounted } from 'vue';
-import { NButton, NSpace, NProgress, NTag, NDropdown, useMessage } from 'naive-ui';
+import { NButton, NSpace, NProgress, NTag, NDropdown, NTooltip, useMessage } from 'naive-ui';
 import type { DataTableColumns } from 'naive-ui';
 import type { UploadFileInfo } from 'naive-ui';
 import { useAccountStore } from '../stores/accountStore';
@@ -793,6 +793,12 @@ const columns = computed<DataTableColumns<any>>(() => {
   { title: '状态', key: 'is_active', width: 80, render: (row) => {
     if (row.is_demo) {
       return h(NTag, { size: 'small', type: 'warning', bordered: false }, { default: () => '演示' });
+    }
+    if (row.decrypt_error) {
+      return h(NTooltip, null, {
+        trigger: () => h(NTag, { size: 'small', type: 'error', bordered: false }, { default: () => '需重录' }),
+        default: () => '凭证无法解密，请编辑账户重新录入 API Token / Key',
+      });
     }
     return h(NTag, { size: 'small', type: row.is_active ? 'success' : 'default' }, { default: () => row.is_active ? '活跃' : '未验证' });
   }},

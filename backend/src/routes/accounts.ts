@@ -14,16 +14,51 @@ import { getHttpAgent } from '../services/proxyService';
 import { clearExhausted } from '../models/quotaUsage';
 import { isDemoAccountId } from './routeUtils';
 import { probeAvailableFeatures } from '../services/accountProbe';
+import { getDb } from '../db';
 
 const router = Router();
 
 const uploadCsv = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+
+/**
+ * Detect accounts whose stored encrypted credentials can no longer be
+ * decrypted with the current ENCRYPTION_KEY. This typically happens after
+ * the .env ENCRYPTION_KEY is rotated or after the SQLite DB is moved
+ * between hosts. Returns the list of affected account IDs.
+ *
+ * Surface this in the GET / response so the UI can show a "needs re-auth"
+ * badge and offer the reset-credentials action without breaking the whole
+ * account list.
+ */
+function findAccountsWithBrokenCredentials(accountIds?: number[]): number[] {
+  const ids = accountIds && accountIds.length > 0
+    ? accountIds
+    : (getAllAccounts().map(a => a.id));
+  if (ids.length === 0) return [];
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = getDb()
+    .prepare(`SELECT id, api_token, api_key, password FROM accounts WHERE id IN (${placeholders})`)
+    .all(...ids) as Array<{ id: number; api_token: string | null; api_key: string | null; password: string | null }>;
+  const broken: number[] = [];
+  for (const r of rows) {
+    let bad = false;
+    for (const field of [r.api_token, r.api_key, r.password]) {
+      if (!field) continue;
+      try { decrypt(field); } catch { bad = true; break; }
+    }
+    if (bad) broken.push(r.id);
+  }
+  return broken;
+}
 
 router.get('/', (req: Request, res: Response, next: NextFunction) => {
   try {
     // 分页模式：当传入 page 或 pageSize 时启用；不传则保持原全量行为（向后兼容）
     const wantsPaged = req.query.page !== undefined || req.query.pageSize !== undefined;
     const quota = getQuotaSummary();
+    // Detect broken-credential accounts once per list call so the UI can flag
+    // them without having to actually try each one through Cloudflare.
+    const brokenIds = new Set(findAccountsWithBrokenCredentials());
     if (wantsPaged) {
       const filter = (req.query.filter as string) as AccountListFilter;
       const validFilters: AccountListFilter[] = ['all', 'active', 'unverified'];
@@ -39,6 +74,7 @@ router.get('/', (req: Request, res: Response, next: NextFunction) => {
         api_token: a.api_token ? '***encrypted***' : null,
         api_key: a.api_key ? '***encrypted***' : null,
         is_demo: isDemoAccountId(a.id),
+        decrypt_error: brokenIds.has(a.id),
       }));
       res.json({ accounts, quota, total: paged.total, counts: paged.counts });
     } else {
@@ -47,6 +83,7 @@ router.get('/', (req: Request, res: Response, next: NextFunction) => {
         api_token: a.api_token ? '***encrypted***' : null,
         api_key: a.api_key ? '***encrypted***' : null,
         is_demo: isDemoAccountId(a.id),
+        decrypt_error: brokenIds.has(a.id),
       }));
       res.json({ accounts, quota });
     }
@@ -764,5 +801,49 @@ function parseCsv(text: string): string[][] {
   }
   return rows;
 }
+
+// ============ Repair: reset broken encrypted credentials ============
+//
+// Wipes api_token / api_key / password for accounts whose stored ciphertext
+// can no longer be decrypted with the current ENCRYPTION_KEY (typical after
+// .env rotation or DB migration). Account metadata (name, email, account_id,
+// features) is preserved so the user can re-enter credentials in the UI.
+//
+// Optionally pass ?id=123 to scope the reset to a single account; otherwise
+// every broken account is reset.
+router.post('/reset-broken-credentials', (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const scopeId = req.query.id ? Number(req.query.id) : undefined;
+    const brokenIds = findAccountsWithBrokenCredentials(scopeId ? [scopeId] : undefined);
+    if (brokenIds.length === 0) {
+      res.json({ success: true, reset: [], message: 'No broken credentials found.' });
+      return;
+    }
+    const placeholders = brokenIds.map(() => '?').join(',');
+    getDb()
+      .prepare(`
+        UPDATE accounts
+        SET api_token = NULL,
+            api_key   = NULL,
+            password  = NULL,
+            is_active = 0,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id IN (${placeholders})
+      `)
+      .run(...brokenIds);
+
+    for (const id of brokenIds) {
+      const acc = getAccountById(id);
+      createAuditLog(id, 'reset_broken_credentials', acc?.name || `#${id}`, 'wiped encrypted fields', 'success');
+    }
+    appLogger.info(`[Accounts] Reset broken credentials for ${brokenIds.length} account(s): ${brokenIds.join(', ')}`);
+    clearCache();
+    res.json({
+      success: true,
+      reset: brokenIds,
+      message: `Reset ${brokenIds.length} account(s). Re-enter credentials in the management UI.`,
+    });
+  } catch (err) { next(err); }
+});
 
 export default router;

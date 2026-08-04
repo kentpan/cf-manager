@@ -124,7 +124,7 @@ import {
   SparklesOutline, ImageOutline, SettingsOutline,
   MenuOutline, SunnyOutline, MoonOutline, ServerOutline,
   CloseOutline, GridOutline, LogOutOutline, StorefrontOutline,
-  GitBranchOutline,
+  GitBranchOutline, RocketOutline, EarthOutline,
 } from '@vicons/ionicons5';
 import apiClient from './api/client';
 import { message as globalMessage, setDiscreteTheme } from './utils/discreteApi';
@@ -166,8 +166,10 @@ const fabStyle = computed(() => {
 const navItems = [
   { label: '仪表盘', key: 'dashboard', iconComponent: SpeedometerOutline },
   { label: '账号', key: 'accounts', iconComponent: PeopleOutline },
+  { label: '域名管理', key: 'domain-providers', iconComponent: EarthOutline },
   { label: 'DNS', key: 'dns', iconComponent: GlobeOutline },
   { label: 'Workers', key: 'workers', iconComponent: ConstructOutline },
+  { label: 'Pages聚合', key: 'pages-aggregator', iconComponent: RocketOutline },
   { label: '存储', key: 'storage', iconComponent: ServerOutline },
   { label: 'AI', key: 'ai', iconComponent: SparklesOutline },
   { label: '渲染', key: 'browser-render', iconComponent: ImageOutline },
@@ -288,8 +290,10 @@ function renderIcon(icon: Component) {
 const menuOptions = [
   { label: '仪表盘', key: 'dashboard', icon: renderIcon(SpeedometerOutline) },
   { label: '账号管理', key: 'accounts', icon: renderIcon(PeopleOutline) },
+  { label: '域名管理', key: 'domain-providers', icon: renderIcon(EarthOutline) },
   { label: 'DNS 管理', key: 'dns', icon: renderIcon(GlobeOutline) },
   { label: 'Workers', key: 'workers', icon: renderIcon(ConstructOutline) },
+  { label: 'Pages聚合', key: 'pages-aggregator', icon: renderIcon(RocketOutline) },
   { label: '存储管理', key: 'storage', icon: renderIcon(ServerOutline) },
   { label: 'AI 推理', key: 'ai', icon: renderIcon(SparklesOutline) },
   { label: '浏览器渲染', key: 'browser-render', icon: renderIcon(ImageOutline) },
