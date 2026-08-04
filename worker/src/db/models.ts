@@ -405,3 +405,139 @@ export async function ensureDefaultCatalogSource(db: D1Database, url: string, na
     await updateCatalogSource(db, existing.id, { url, name });
   }
 }
+
+// ============ Domain Providers ============
+// Mirrors backend/src/models/domainProvider.ts — adapted for D1's async API.
+
+export interface DomainProvider {
+  id: number;
+  code: string;
+  name: string;
+  api_base_url: string;
+  auth_type: string;
+  capabilities: string;
+  doc_url: string;
+  register_url: string;
+  promo_url: string;
+  regions: string;
+  description: string;
+  commission_model: string;
+  registration_steps: string;
+  credential_fields: string;
+  is_default: number;
+  enabled: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DomainProviderAccount {
+  id: number;
+  provider_id: number;
+  name: string;
+  api_key: string | null;
+  api_secret: string | null;
+  api_user: string | null;
+  is_active: number;
+  last_synced: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function getAllProviders(db: D1Database): Promise<DomainProvider[]> {
+  const { results } = await db.prepare('SELECT * FROM domain_providers ORDER BY is_default DESC, name ASC').all();
+  return results as unknown as DomainProvider[];
+}
+
+export async function getProviderById(db: D1Database, id: number): Promise<DomainProvider | null> {
+  return await db.prepare('SELECT * FROM domain_providers WHERE id = ?').bind(id).first() as unknown as DomainProvider | null;
+}
+
+export async function createProvider(db: D1Database, input: Record<string, any>): Promise<number> {
+  const result = await db.prepare(
+    `INSERT INTO domain_providers (code, name, api_base_url, auth_type, capabilities, doc_url, register_url, promo_url, regions, description, commission_model, registration_steps, credential_fields, is_default, enabled)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    input.code, input.name, input.api_base_url,
+    input.auth_type || 'header', input.capabilities || '', input.doc_url || '',
+    input.register_url || '', input.promo_url || '', input.regions || 'GLOBAL',
+    input.description || '', input.commission_model || '',
+    input.registration_steps || '', input.credential_fields || '',
+    input.is_default ?? 0, input.enabled ?? 1,
+  ).run();
+  return Number(result.meta.last_row_id);
+}
+
+export async function updateProvider(db: D1Database, id: number, input: Record<string, any>): Promise<void> {
+  const fieldMap: Record<string, string> = {
+    name: 'name', api_base_url: 'api_base_url', auth_type: 'auth_type',
+    capabilities: 'capabilities', doc_url: 'doc_url', register_url: 'register_url',
+    promo_url: 'promo_url', regions: 'regions', description: 'description',
+    commission_model: 'commission_model', registration_steps: 'registration_steps',
+    credential_fields: 'credential_fields', is_default: 'is_default', enabled: 'enabled',
+  };
+  const sets: string[] = [];
+  const vals: any[] = [];
+  for (const [key, val] of Object.entries(input)) {
+    if (val !== undefined && fieldMap[key]) {
+      sets.push(`${fieldMap[key]} = ?`);
+      vals.push(val);
+    }
+  }
+  if (sets.length === 0) return;
+  sets.push("updated_at = CURRENT_TIMESTAMP");
+  vals.push(id);
+  await db.prepare(`UPDATE domain_providers SET ${sets.join(', ')} WHERE id = ?`).bind(...vals).run();
+}
+
+export async function deleteProvider(db: D1Database, id: number): Promise<void> {
+  await db.prepare('DELETE FROM domain_providers WHERE id = ? AND is_default = 0').bind(id).run();
+}
+
+export async function getAccountsByProvider(db: D1Database, providerId: number): Promise<DomainProviderAccount[]> {
+  const { results } = await db.prepare('SELECT * FROM domain_provider_accounts WHERE provider_id = ? ORDER BY created_at DESC').bind(providerId).all();
+  return results as unknown as DomainProviderAccount[];
+}
+
+export async function getProviderAccountById(db: D1Database, id: number): Promise<DomainProviderAccount | null> {
+  return await db.prepare('SELECT * FROM domain_provider_accounts WHERE id = ?').bind(id).first() as unknown as DomainProviderAccount | null;
+}
+
+export async function getAccountWithProvider(db: D1Database, id: number): Promise<(DomainProviderAccount & { provider_code: string; provider_name: string; api_base_url: string; auth_type: string }) | null> {
+  return await db.prepare(`
+    SELECT a.*, p.code AS provider_code, p.name AS provider_name, p.api_base_url AS api_base_url, p.auth_type AS auth_type
+    FROM domain_provider_accounts a
+    JOIN domain_providers p ON p.id = a.provider_id
+    WHERE a.id = ?
+  `).bind(id).first() as any;
+}
+
+export async function createProviderAccount(db: D1Database, providerId: number, input: Record<string, any>, encryptedKey: string, encryptedSecret: string, encryptedUser?: string): Promise<number> {
+  const result = await db.prepare(
+    `INSERT INTO domain_provider_accounts (provider_id, name, api_key, api_secret, api_user, is_active)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).bind(
+    providerId, input.name, encryptedKey,
+    encryptedSecret || null, encryptedUser || null,
+    input.is_active ?? 1,
+  ).run();
+  return Number(result.meta.last_row_id);
+}
+
+export async function updateProviderAccount(db: D1Database, id: number, fields: Record<string, any>): Promise<void> {
+  const sets: string[] = [];
+  const vals: any[] = [];
+  for (const [key, val] of Object.entries(fields)) {
+    if (val === undefined) continue;
+    sets.push(`${key} = ?`);
+    vals.push(val);
+  }
+  if (sets.length === 0) return;
+  sets.push("updated_at = CURRENT_TIMESTAMP");
+  vals.push(id);
+  await db.prepare(`UPDATE domain_provider_accounts SET ${sets.join(', ')} WHERE id = ?`).bind(...vals).run();
+}
+
+export async function deleteProviderAccount(db: D1Database, id: number): Promise<void> {
+  await db.prepare('DELETE FROM domain_provider_accounts WHERE id = ?').bind(id).run();
+}
