@@ -254,14 +254,17 @@ app.post('/aggregate-homepage/fetch-metadata', async (c) => {
       });
       if (htmlResp.ok) {
         const htmlData = await htmlResp.json() as any;
-        const html = htmlData?.html || htmlData?.result || '';
+        // responseWrapper wraps the response as {success:true, data:{...}}
+        // The actual render result is in htmlData.data or htmlData directly
+        const renderResult = htmlData?.data || htmlData;
+        const html = renderResult?.html || renderResult?.result || '';
         const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
         pageTitle = titleMatch ? titleMatch[1].trim().slice(0, 200) : '';
         const descMatch = html.match(/<meta\s+name=["']description["']\s+content=["']([^"']*)["']/i);
         pageDescription = descMatch ? descMatch[1].trim().slice(0, 300) : '';
       } else {
         const errData = await htmlResp.json().catch(() => ({}));
-        htmlFetchError = errData?.error?.message || `HTTP ${htmlResp.status}`;
+        htmlFetchError = errData?.error?.message || errData?.data?.error?.message || `HTTP ${htmlResp.status}`;
       }
     } catch (e: any) {
       htmlFetchError = e?.message || String(e);
@@ -269,35 +272,39 @@ app.post('/aggregate-homepage/fetch-metadata', async (c) => {
     }
   }
 
-  // 2. Capture screenshot — call the same internal /api/browser-render
-  //    endpoint (with rate limiting + retry).
-  if (fetchScreenshot && cfg.image_upload.enabled && cfg.image_upload.api_url && cfg.image_upload.api_key) {
-    try {
-      const screenshotResp = await fetch(browserRenderUrl, {
-        method: 'POST',
-        headers: internalHeaders,
-        body: JSON.stringify({ url: targetUrl, mode: 'screenshot' }),
-      });
-      if (screenshotResp.ok) {
-        const screenshotData = await screenshotResp.json() as any;
-        const screenshotBase64 = screenshotData?.screenshot || screenshotData?.result?.screenshot || '';
-        if (screenshotBase64) {
-          const base64Data = screenshotBase64.replace(/^data:image\/png;base64,/, '');
-          const buffer = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0)).buffer;
-          screenshotPath = await uploadScreenshotToImageHost(buffer, cfg.image_upload, worker_name);
+  // 2. Capture screenshot — call the same internal /api/browser-render endpoint.
+  if (fetchScreenshot) {
+    if (cfg.image_upload.enabled && cfg.image_upload.api_url && cfg.image_upload.api_key) {
+      try {
+        const screenshotResp = await fetch(browserRenderUrl, {
+          method: 'POST',
+          headers: internalHeaders,
+          body: JSON.stringify({ url: targetUrl, mode: 'screenshot' }),
+        });
+        if (screenshotResp.ok) {
+          const screenshotData = await screenshotResp.json() as any;
+          // responseWrapper wraps as {success:true, data:{...}}
+          const renderResult = screenshotData?.data || screenshotData;
+          const screenshotBase64 = renderResult?.screenshot || '';
+          if (screenshotBase64) {
+            const base64Data = screenshotBase64.replace(/^data:image\/png;base64,/, '');
+            const buffer = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0)).buffer;
+            screenshotPath = await uploadScreenshotToImageHost(buffer, cfg.image_upload, worker_name);
+          } else {
+            screenshotError = 'browser-render 返回空截图数据';
+          }
         } else {
-          screenshotError = 'browser-render 返回空截图数据';
+          const errData = await screenshotResp.json().catch(() => ({}));
+          screenshotError = errData?.error?.message || errData?.data?.error?.message || `HTTP ${screenshotResp.status}`;
         }
-      } else {
-        const errData = await screenshotResp.json().catch(() => ({}));
-        screenshotError = errData?.error?.message || `HTTP ${screenshotResp.status}`;
+      } catch (e: any) {
+        screenshotError = e?.message || String(e);
+        console.warn(`[fetch-metadata] screenshot capture/upload failed for ${targetUrl}: ${screenshotError}`);
       }
-    } catch (e: any) {
-      screenshotError = e?.message || String(e);
-      console.warn(`[fetch-metadata] screenshot capture/upload failed for ${targetUrl}: ${screenshotError}`);
+    } else {
+      // Only report this error when screenshot was actually requested
+      screenshotError = '图床未启用或缺少 api_url / api_key 配置';
     }
-  } else {
-    screenshotError = '图床未启用或缺少 api_url / api_key 配置';
   }
 
   // Update the item with the fetched metadata
