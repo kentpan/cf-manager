@@ -107,6 +107,8 @@ app.get('/', async (c) => {
           ...w, name: w.id, status: 'deployed', type: 'worker',
           cfAccountId: account.id, accountName: account.name,
           domains: [],
+          production_branch: '',
+          deployment_count: 0,
         })));
       } else {
         console.error(`[PagesAggregator] workers list failed for ${account.name}: ${workersRes.reason}`);
@@ -116,6 +118,8 @@ app.get('/', async (c) => {
           ...p, name: p.name ?? p.id, type: 'pages',
           cfAccountId: account.id, accountName: account.name,
           domains: p.domains && p.domains.length > 0 ? p.domains : [`${p.name}.pages.dev`],
+          production_branch: p.production_branch || '',
+          deployment_count: p.deployment_count || 0,
         })));
       } else {
         console.error(`[PagesAggregator] pages list failed for ${account.name}: ${pagesRes.reason}`);

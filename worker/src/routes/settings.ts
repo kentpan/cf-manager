@@ -224,12 +224,19 @@ app.post('/aggregate-homepage/fetch-metadata', async (c) => {
 
   // 1. Fetch page HTML — call the internal /api/browser-render endpoint
   //    which handles rate limiting, token bucket, retry with backup
-  //    accounts, and daily quota exhaustion. We call it with accountId
-  //    so it uses the project's own account.
+  //    accounts, and daily quota exhaustion. We pass accountId so it uses
+  //    the project's own account. We also pass the API_SECRET auth header
+  //    because /api/browser-render is behind authMiddleware.
+  const internalHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (c.env.API_SECRET) {
+    internalHeaders['Authorization'] = `Bearer ${c.env.API_SECRET}`;
+  }
+  const browserRenderUrl = new URL('/api/browser-render', c.req.url).toString();
+
   try {
-    const htmlResp = await fetch(new URL('/api/browser-render', c.req.url).toString(), {
+    const htmlResp = await fetch(browserRenderUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: internalHeaders,
       body: JSON.stringify({ url: targetUrl, mode: 'content', accountId: projectAccount.id }),
     });
     if (htmlResp.ok) {
@@ -249,13 +256,12 @@ app.post('/aggregate-homepage/fetch-metadata', async (c) => {
   }
 
   // 2. Capture screenshot — call the same internal /api/browser-render
-  //    endpoint (with rate limiting + retry). This replaces the direct
-  //    CF API call that caused 429 errors.
+  //    endpoint (with rate limiting + retry).
   if (cfg.image_upload.enabled && cfg.image_upload.api_url && cfg.image_upload.api_key) {
     try {
-      const screenshotResp = await fetch(new URL('/api/browser-render', c.req.url).toString(), {
+      const screenshotResp = await fetch(browserRenderUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: internalHeaders,
         body: JSON.stringify({ url: targetUrl, mode: 'screenshot', accountId: projectAccount.id }),
       });
       if (screenshotResp.ok) {

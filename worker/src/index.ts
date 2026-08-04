@@ -38,33 +38,10 @@ app.use('*', errorHandler);
 
 // Aggregate homepage — PUBLIC, unauthenticated. Mounted BEFORE authMiddleware
 // so visitors without API_SECRET can load the portfolio/demo landing page.
-// The admin UI reads/writes the same config via the authenticated
-// /api/settings/aggregate-homepage route.
 app.route('/api/aggregate-homepage', aggregateHomepageRouter);
 
-// OpenAI-compatible routes (MUST be registered BEFORE responseWrapper)
-// These routes return OpenAI-standard format and should not be wrapped
-app.use('/v1/*', requestIdMiddleware);
-app.use('/v1/*', authMiddleware);
-app.route('/v1', openaiRouter);
-app.use('/v1/*', v1ErrorHandler);
-
-app.use('/api/v1/*', requestIdMiddleware);
-app.use('/api/v1/*', authMiddleware);
-app.route('/api/v1', openaiRouter);
-app.use('/api/v1/*', v1ErrorHandler);
-
-// Other API routes (with responseWrapper)
-app.use('/api/*', responseWrapper);
-app.use('/api/*', authMiddleware);
-
-app.onError((err: any, c) => {
-  const status = err.statusCode || err.status || 500;
-  const message = err.message || 'Internal server error';
-  console.error(`[OnError] ${c.req.method} ${c.req.path}: ${message}`);
-  return c.json({ error: { code: status >= 500 ? 'INTERNAL_ERROR' : 'REQUEST_ERROR', message } }, status as any);
-});
-
+// Health check — also public (Docker healthcheck, monitoring).
+// MUST be before authMiddleware.
 app.get('/api/health', async (c) => {
   const diag: Record<string, any> = {
     status: 'ok',
@@ -86,6 +63,28 @@ app.get('/api/health', async (c) => {
     }
   }
   return c.json(diag);
+});
+
+// OpenAI-compatible routes (MUST be registered BEFORE responseWrapper)
+app.use('/v1/*', requestIdMiddleware);
+app.use('/v1/*', authMiddleware);
+app.route('/v1', openaiRouter);
+app.use('/v1/*', v1ErrorHandler);
+
+app.use('/api/v1/*', requestIdMiddleware);
+app.use('/api/v1/*', authMiddleware);
+app.route('/api/v1', openaiRouter);
+app.use('/api/v1/*', v1ErrorHandler);
+
+// Other API routes (with responseWrapper + auth)
+app.use('/api/*', responseWrapper);
+app.use('/api/*', authMiddleware);
+
+app.onError((err: any, c) => {
+  const status = err.statusCode || err.status || 500;
+  const message = err.message || 'Internal server error';
+  console.error(`[OnError] ${c.req.method} ${c.req.path}: ${message}`);
+  return c.json({ error: { code: status >= 500 ? 'INTERNAL_ERROR' : 'REQUEST_ERROR', message } }, status as any);
 });
 
 app.route('/api/accounts', accountsRouter);
