@@ -506,7 +506,6 @@ onMounted(() => {
 }
 
 .stat-card {
-  background-color: var(--n-color, transparent);
 }
 
 .pages-card {
@@ -517,7 +516,6 @@ onMounted(() => {
   flex-direction: column;
   gap: 10px;
   transition: all 0.15s ease;
-  background-color: var(--n-color, #fff);
   height: 100%;
 }
 .pages-card:hover {

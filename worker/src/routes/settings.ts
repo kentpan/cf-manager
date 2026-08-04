@@ -215,7 +215,6 @@ app.post('/aggregate-homepage/fetch-metadata', async (c) => {
   if (!hasFeature(projectAccount, 'browser_render')) {
     return c.json({ error: { code: 'NO_BROWSER_FEATURE', message: `账号「${projectAccount.name}」未启用 browser_render 功能，请在「账号管理」中开启` } }, 400);
   }
-  const browserAccount = projectAccount;
 
   let pageTitle = '';
   let pageDescription = '';
@@ -223,9 +222,11 @@ app.post('/aggregate-homepage/fetch-metadata', async (c) => {
   let htmlFetchError = '';
   let screenshotError = '';
 
-  // 1. Fetch page HTML via browser-render 'content' mode
+  // 1. Fetch page HTML — on Worker we call CF API directly via cfFetch
+  //    (the browser-render route's rate limiter is for the external API
+  //    endpoint, not for internal service-to-service calls).
   try {
-    const resp = await cfFetch<{ result: string }>(browserAccount, `/accounts/${browserAccount.account_id}/browser-rendering/content`, c.env.ENCRYPTION_KEY, {
+    const resp = await cfFetch<{ result: string }>(projectAccount, `/accounts/${projectAccount.account_id}/browser-rendering/content`, c.env.ENCRYPTION_KEY, {
       method: 'POST',
       body: JSON.stringify({ url: targetUrl }),
     });
@@ -242,8 +243,8 @@ app.post('/aggregate-homepage/fetch-metadata', async (c) => {
   // 2. Capture screenshot + upload to image host
   if (cfg.image_upload.enabled && cfg.image_upload.api_url && cfg.image_upload.api_key) {
     try {
-      const authHeaders = await getAuthHeaders(browserAccount, c.env.ENCRYPTION_KEY);
-      const screenshotResp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${browserAccount.account_id}/browser-rendering/screenshot`, {
+      const authHeaders = await getAuthHeaders(projectAccount, c.env.ENCRYPTION_KEY);
+      const screenshotResp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${projectAccount.account_id}/browser-rendering/screenshot`, {
         method: 'POST',
         headers: { ...authHeaders, 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: targetUrl }),

@@ -4,7 +4,7 @@ import { getAllAccounts, getAccountById, addAuditLog } from '../db/models';
 import { isDemoAccount } from '../services/demo';
 import { cfFetch, cfFetchPage } from '../services/cfApi';
 import {
-  listTunnelAccounts, listTunnels, createTunnel, deleteTunnel,
+  listTunnelAccounts, listTunnels, listTunnelsPaged, createTunnel, deleteTunnel,
   getTunnelToken, getTunnelConnections, getTunnelConfig, updateTunnelConfig,
   listTunnelHostnames,
 } from '../services/tunnelService';

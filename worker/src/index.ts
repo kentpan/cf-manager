@@ -146,26 +146,21 @@ app.all('/admin/*', async (c) => {
 });
 
 app.all('*', async (c) => {
-  // Root path '/' — when the aggregate homepage is enabled, serve the
-  // Vue SPA's index.html so the router can render the portfolio/demo
-  // landing page (HomeRedirect → AggregateHomepageView). The SPA is
-  // normally served from /admin/, but we serve the same index.html at
-  // the root when the aggregate homepage is on so visitors land on the
-  // portfolio instead of the disguised nginx page.
+  // Root path '/' and '/aggregate-homepage' — when the aggregate homepage
+  // is enabled, serve the Vue SPA's index.html so the router can render
+  // the portfolio/demo landing page. The SPA is normally served from
+  // /admin/, but we serve the same index.html at these root paths when
+  // the aggregate homepage is on so visitors land on the portfolio.
   //
   // When the aggregate homepage is disabled, fall back to the fake nginx
-  // welcome page (security-through-obscurity: hides the admin UI from
-  // anyone who doesn't know to visit /admin/).
+  // welcome page (security-through-obscurity: hides the admin UI).
   const url = new URL(c.req.url);
-  if (url.pathname === '/' || url.pathname === '') {
+  if (url.pathname === '/' || url.pathname === '/aggregate-homepage' || url.pathname === '') {
     try {
       const raw = await getSetting(c.env.DB, 'aggregate_homepage');
       if (raw) {
         const cfg = JSON.parse(raw);
         if (cfg.enabled && c.env.ASSETS) {
-          // Serve the SPA's index.html. The vue-router will pick up the
-          // root path and render HomeRedirect.vue, which calls
-          // /api/aggregate-homepage to decide what to show.
           const index = await c.env.ASSETS.fetch(new Request(new URL('/index.html', url.origin).toString()));
           return new Response(index.body, {
             status: 200,
@@ -174,8 +169,7 @@ app.all('*', async (c) => {
         }
       }
     } catch {
-      // Config read failed (D1 not provisioned yet, etc.) — fall through
-      // to the fake nginx page.
+      // Config read failed — fall through to fake nginx.
     }
   }
   return c.html(getFakeNginxPage());
