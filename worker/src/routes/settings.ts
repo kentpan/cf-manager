@@ -222,38 +222,55 @@ app.post('/aggregate-homepage/fetch-metadata', async (c) => {
   let htmlFetchError = '';
   let screenshotError = '';
 
-  // 1. Fetch page HTML — on Worker we call CF API directly via cfFetch
-  //    (the browser-render route's rate limiter is for the external API
-  //    endpoint, not for internal service-to-service calls).
+  // 1. Fetch page HTML — call the internal /api/browser-render endpoint
+  //    which handles rate limiting, token bucket, retry with backup
+  //    accounts, and daily quota exhaustion. We call it with accountId
+  //    so it uses the project's own account.
   try {
-    const resp = await cfFetch<{ result: string }>(projectAccount, `/accounts/${projectAccount.account_id}/browser-rendering/content`, c.env.ENCRYPTION_KEY, {
+    const htmlResp = await fetch(new URL('/api/browser-render', c.req.url).toString(), {
       method: 'POST',
-      body: JSON.stringify({ url: targetUrl }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: targetUrl, mode: 'content', accountId: projectAccount.id }),
     });
-    const html = resp.result || '';
-    const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
-    pageTitle = titleMatch ? titleMatch[1].trim().slice(0, 200) : '';
-    const descMatch = html.match(/<meta\s+name=["']description["']\s+content=["']([^"']*)["']/i);
-    pageDescription = descMatch ? descMatch[1].trim().slice(0, 300) : '';
+    if (htmlResp.ok) {
+      const htmlData = await htmlResp.json() as any;
+      const html = htmlData?.html || htmlData?.result || '';
+      const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+      pageTitle = titleMatch ? titleMatch[1].trim().slice(0, 200) : '';
+      const descMatch = html.match(/<meta\s+name=["']description["']\s+content=["']([^"']*)["']/i);
+      pageDescription = descMatch ? descMatch[1].trim().slice(0, 300) : '';
+    } else {
+      const errData = await htmlResp.json().catch(() => ({}));
+      htmlFetchError = errData?.error?.message || `HTTP ${htmlResp.status}`;
+    }
   } catch (e: any) {
     htmlFetchError = e?.message || String(e);
     console.warn(`[fetch-metadata] HTML fetch failed for ${targetUrl}: ${htmlFetchError}`);
   }
 
-  // 2. Capture screenshot + upload to image host
+  // 2. Capture screenshot — call the same internal /api/browser-render
+  //    endpoint (with rate limiting + retry). This replaces the direct
+  //    CF API call that caused 429 errors.
   if (cfg.image_upload.enabled && cfg.image_upload.api_url && cfg.image_upload.api_key) {
     try {
-      const authHeaders = await getAuthHeaders(projectAccount, c.env.ENCRYPTION_KEY);
-      const screenshotResp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${projectAccount.account_id}/browser-rendering/screenshot`, {
+      const screenshotResp = await fetch(new URL('/api/browser-render', c.req.url).toString(), {
         method: 'POST',
-        headers: { ...authHeaders, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: targetUrl }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: targetUrl, mode: 'screenshot', accountId: projectAccount.id }),
       });
       if (screenshotResp.ok) {
-        const screenshotBuffer = await screenshotResp.arrayBuffer();
-        screenshotPath = await uploadScreenshotToImageHost(screenshotBuffer, cfg.image_upload, worker_name);
+        const screenshotData = await screenshotResp.json() as any;
+        const screenshotBase64 = screenshotData?.screenshot || screenshotData?.result?.screenshot || '';
+        if (screenshotBase64) {
+          const base64Data = screenshotBase64.replace(/^data:image\/png;base64,/, '');
+          const buffer = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0)).buffer;
+          screenshotPath = await uploadScreenshotToImageHost(buffer, cfg.image_upload, worker_name);
+        } else {
+          screenshotError = 'browser-render 返回空截图数据';
+        }
       } else {
-        screenshotError = `browser-render screenshot HTTP ${screenshotResp.status}`;
+        const errData = await screenshotResp.json().catch(() => ({}));
+        screenshotError = errData?.error?.message || `HTTP ${screenshotResp.status}`;
       }
     } catch (e: any) {
       screenshotError = e?.message || String(e);
