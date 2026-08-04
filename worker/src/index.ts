@@ -6,7 +6,7 @@ import { errorHandler } from './middleware/errorHandler';
 import { v1ErrorHandler } from './middleware/v1ErrorHandler';
 import { requestIdMiddleware } from './middleware/requestId';
 import { responseWrapper } from './middleware/responseWrapper';
-import { getRecentLogs, queryLogs, getDistinctActions } from './db/models';
+import { getRecentLogs, queryLogs, getDistinctActions, getSetting } from './db/models';
 import { getEnabledCatalogSources, updateCatalogSource } from './db/models';
 import { getQuotaSummary, syncUsageFromCloudflare, invalidateAiCache } from './services/quotaTracker';
 import { getFakeNginxPage } from './pages/fakeNginx';
@@ -21,6 +21,7 @@ import openaiRouter from './routes/openai';
 import storeRouter from './routes/store';
 import tunnelsRouter from './routes/tunnels';
 import aiRouter from './routes/ai';
+import aggregateHomepageRouter from './routes/aggregateHomepage';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -32,6 +33,12 @@ app.use('*', cors({
   maxAge: 86400,
 }));
 app.use('*', errorHandler);
+
+// Aggregate homepage — PUBLIC, unauthenticated. Mounted BEFORE authMiddleware
+// so visitors without API_SECRET can load the portfolio/demo landing page.
+// The admin UI reads/writes the same config via the authenticated
+// /api/settings/aggregate-homepage route.
+app.route('/api/aggregate-homepage', aggregateHomepageRouter);
 
 // OpenAI-compatible routes (MUST be registered BEFORE responseWrapper)
 // These routes return OpenAI-standard format and should not be wrapped
@@ -134,7 +141,39 @@ app.all('/admin/*', async (c) => {
   });
 });
 
-app.all('*', (c) => {
+app.all('*', async (c) => {
+  // Root path '/' — when the aggregate homepage is enabled, serve the
+  // Vue SPA's index.html so the router can render the portfolio/demo
+  // landing page (HomeRedirect → AggregateHomepageView). The SPA is
+  // normally served from /admin/, but we serve the same index.html at
+  // the root when the aggregate homepage is on so visitors land on the
+  // portfolio instead of the disguised nginx page.
+  //
+  // When the aggregate homepage is disabled, fall back to the fake nginx
+  // welcome page (security-through-obscurity: hides the admin UI from
+  // anyone who doesn't know to visit /admin/).
+  const url = new URL(c.req.url);
+  if (url.pathname === '/' || url.pathname === '') {
+    try {
+      const raw = await getSetting(c.env.DB, 'aggregate_homepage');
+      if (raw) {
+        const cfg = JSON.parse(raw);
+        if (cfg.enabled && c.env.ASSETS) {
+          // Serve the SPA's index.html. The vue-router will pick up the
+          // root path and render HomeRedirect.vue, which calls
+          // /api/aggregate-homepage to decide what to show.
+          const index = await c.env.ASSETS.fetch(new Request(new URL('/index.html', url.origin).toString()));
+          return new Response(index.body, {
+            status: 200,
+            headers: new Headers(index.headers),
+          });
+        }
+      }
+    } catch {
+      // Config read failed (D1 not provisioned yet, etc.) — fall through
+      // to the fake nginx page.
+    }
+  }
   return c.html(getFakeNginxPage());
 });
 
