@@ -292,11 +292,15 @@ router.put('/aggregate-homepage', (req, res) => {
 // the (potentially slow) browser-render call happens.
 router.post('/aggregate-homepage/fetch-metadata', async (req, res, next: NextFunction) => {
   try {
-    const { account_id, worker_name } = req.body || {};
+    const { account_id, worker_name, mode } = req.body || {};
     if (typeof account_id !== 'number' || typeof worker_name !== 'string') {
       res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'account_id (number) + worker_name (string) 必填' } });
       return;
     }
+    // mode: 'html' = only fetch title/description, 'screenshot' = only capture screenshot
+    // undefined/omitted = fetch both (legacy behavior, not used by new UI)
+    const fetchHtml = mode !== 'screenshot';
+    const fetchScreenshot = mode !== 'html';
     const cfg = getAggregateConfig();
     const item = cfg.items.find(it => it.account_id === account_id && it.worker_name === worker_name);
     if (!item) {
@@ -319,21 +323,17 @@ router.post('/aggregate-homepage/fetch-metadata', async (req, res, next: NextFun
 
     // Find the Cloudflare account that OWNS this project (by account_id)
     // so we use that account's browser-render quota, not a random one.
-    // This avoids 429 rate-limit errors when one account is hammered by
-    // all projects' screenshot captures.
-    const { getAccountById } = await import('../models/account');
+    const { getAccountById, hasFeature } = await import('../models/account');
     const projectAccount = getAccountById(item.account_id);
     if (!projectAccount || !projectAccount.account_id) {
       res.status(400).json({ error: { code: 'ACCOUNT_NOT_FOUND', message: '项目所属账号不存在或未配置 account_id' } });
       return;
     }
     // Check that the account has browser_render feature enabled
-    const { hasFeature } = await import('../models/account');
     if (!hasFeature(projectAccount, 'browser_render')) {
       res.status(400).json({ error: { code: 'NO_BROWSER_FEATURE', message: `账号「${projectAccount.name}」未启用 browser_render 功能，请在「账号管理」中开启` } });
       return;
     }
-    const browserAccount = projectAccount;
 
     let pageTitle = '';
     let pageDescription = '';
@@ -341,38 +341,37 @@ router.post('/aggregate-homepage/fetch-metadata', async (req, res, next: NextFun
     let htmlFetchError = '';
     let screenshotError = '';
 
-    // 1. Fetch the page HTML via browser-render 'content' mode to extract
-    //    <title> + <meta name="description">. This is a single API call
-    //    that returns the rendered HTML (after JS execution).
-    try {
-      const { renderPage } = await import('../services/browserRenderService');
-      const htmlResult = await renderPage(browserAccount, targetUrl, 'content');
-      const html = htmlResult.html || '';
-      // Extract <title>
-      const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
-      pageTitle = titleMatch ? titleMatch[1].trim().slice(0, 200) : '';
-      // Extract <meta name="description" content="...">
-      const descMatch = html.match(/<meta\s+name=["']description["']\s+content=["']([^"']*)["']/i);
-      pageDescription = descMatch ? descMatch[1].trim().slice(0, 300) : '';
-    } catch (e: any) {
-      htmlFetchError = e?.message || String(e);
-      console.warn(`[fetch-metadata] HTML fetch failed for ${targetUrl}: ${htmlFetchError}`);
+    // 1. Fetch the page HTML via the browser-render route (only if fetchHtml)
+    if (fetchHtml) {
+      try {
+        const { handleBrowserRender } = await import('../services/browserRenderHandler');
+        const htmlResp = await handleBrowserRender({ url: targetUrl, mode: 'content' });
+        if (htmlResp.status === 200 && htmlResp.body.success && htmlResp.body.result?.html) {
+          const html = htmlResp.body.result.html;
+          const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+          pageTitle = titleMatch ? titleMatch[1].trim().slice(0, 200) : '';
+          const descMatch = html.match(/<meta\s+name=["']description["']\s+content=["']([^"']*)["']/i);
+          pageDescription = descMatch ? descMatch[1].trim().slice(0, 300) : '';
+        } else {
+          htmlFetchError = htmlResp.body.error?.message || `HTTP ${htmlResp.status}`;
+        }
+      } catch (e: any) {
+        htmlFetchError = e?.message || String(e);
+        console.warn(`[fetch-metadata] HTML fetch failed for ${targetUrl}: ${htmlFetchError}`);
+      }
     }
 
-    // 2. Capture screenshot via browser-render 'screenshot' mode + upload
-    //    to the configured image host. Run this even if image_upload is not
-    //    enabled — if disabled we just skip the upload but still log whether
-    //    the screenshot API call itself worked.
-    if (cfg.image_upload.enabled && cfg.image_upload.api_url && cfg.image_upload.api_key) {
+    // 2. Capture screenshot (only if fetchScreenshot)
+    if (fetchScreenshot && cfg.image_upload.enabled && cfg.image_upload.api_url && cfg.image_upload.api_key) {
       try {
-        const { renderPage } = await import('../services/browserRenderService');
-        const screenshotResult = await renderPage(browserAccount, targetUrl, 'screenshot');
-        if (screenshotResult.screenshot) {
-          const base64Data = screenshotResult.screenshot.replace(/^data:image\/png;base64,/, '');
+        const { handleBrowserRender } = await import('../services/browserRenderHandler');
+        const screenshotResp = await handleBrowserRender({ url: targetUrl, mode: 'screenshot' });
+        if (screenshotResp.status === 200 && screenshotResp.body.success && screenshotResp.body.result?.screenshot) {
+          const base64Data = screenshotResp.body.result.screenshot.replace(/^data:image\/png;base64,/, '');
           const buffer = Buffer.from(base64Data, 'base64');
           screenshotPath = await uploadScreenshotToImageHost(buffer, cfg.image_upload, worker_name);
         } else {
-          screenshotError = 'browser-render 返回空截图数据';
+          screenshotError = screenshotResp.body.error?.message || `HTTP ${screenshotResp.status}`;
         }
       } catch (e: any) {
         screenshotError = e?.message || String(e);

@@ -182,10 +182,14 @@ app.put('/aggregate-homepage', async (c) => {
 // the screenshot to the configured image host and store the returned path
 // back into the aggregate_homepage config for that item.
 app.post('/aggregate-homepage/fetch-metadata', async (c) => {
-  const { account_id, worker_name } = await c.req.json().catch(() => ({}));
+  const body = await c.req.json().catch(() => ({}));
+  const { account_id, worker_name, mode } = body;
   if (typeof account_id !== 'number' || typeof worker_name !== 'string') {
     return c.json({ error: { code: 'VALIDATION_ERROR', message: 'account_id (number) + worker_name (string) 必填' } }, 400);
   }
+  // mode: 'html' = only fetch title/description, 'screenshot' = only capture screenshot
+  const fetchHtml = mode !== 'screenshot';
+  const fetchScreenshot = mode !== 'html';
 
   const cfg = await getAggregateConfig(c.env);
   const item = cfg.items.find(it => it.account_id === account_id && it.worker_name === worker_name);
@@ -233,36 +237,46 @@ app.post('/aggregate-homepage/fetch-metadata', async (c) => {
   }
   const browserRenderUrl = new URL('/api/browser-render', c.req.url).toString();
 
-  try {
-    const htmlResp = await fetch(browserRenderUrl, {
-      method: 'POST',
-      headers: internalHeaders,
-      body: JSON.stringify({ url: targetUrl, mode: 'content', accountId: projectAccount.id }),
-    });
-    if (htmlResp.ok) {
-      const htmlData = await htmlResp.json() as any;
-      const html = htmlData?.html || htmlData?.result || '';
-      const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
-      pageTitle = titleMatch ? titleMatch[1].trim().slice(0, 200) : '';
-      const descMatch = html.match(/<meta\s+name=["']description["']\s+content=["']([^"']*)["']/i);
-      pageDescription = descMatch ? descMatch[1].trim().slice(0, 300) : '';
-    } else {
-      const errData = await htmlResp.json().catch(() => ({}));
-      htmlFetchError = errData?.error?.message || `HTTP ${htmlResp.status}`;
+  // NOTE: We intentionally do NOT pass accountId here. When accountId is
+  // specified, handleRender bypasses the token bucket (no rate limiting)
+  // and doesn't retry with backup accounts on 429 — which is exactly why
+  // we kept getting 429 errors. By NOT passing accountId, handleRender
+  // uses the global token bucket (10s cooldown per account) and
+  // automatically fails over to another account if the current one hits
+  // a rate limit or daily quota.
+
+  if (fetchHtml) {
+    try {
+      const htmlResp = await fetch(browserRenderUrl, {
+        method: 'POST',
+        headers: internalHeaders,
+        body: JSON.stringify({ url: targetUrl, mode: 'content' }),
+      });
+      if (htmlResp.ok) {
+        const htmlData = await htmlResp.json() as any;
+        const html = htmlData?.html || htmlData?.result || '';
+        const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+        pageTitle = titleMatch ? titleMatch[1].trim().slice(0, 200) : '';
+        const descMatch = html.match(/<meta\s+name=["']description["']\s+content=["']([^"']*)["']/i);
+        pageDescription = descMatch ? descMatch[1].trim().slice(0, 300) : '';
+      } else {
+        const errData = await htmlResp.json().catch(() => ({}));
+        htmlFetchError = errData?.error?.message || `HTTP ${htmlResp.status}`;
+      }
+    } catch (e: any) {
+      htmlFetchError = e?.message || String(e);
+      console.warn(`[fetch-metadata] HTML fetch failed for ${targetUrl}: ${htmlFetchError}`);
     }
-  } catch (e: any) {
-    htmlFetchError = e?.message || String(e);
-    console.warn(`[fetch-metadata] HTML fetch failed for ${targetUrl}: ${htmlFetchError}`);
   }
 
   // 2. Capture screenshot — call the same internal /api/browser-render
   //    endpoint (with rate limiting + retry).
-  if (cfg.image_upload.enabled && cfg.image_upload.api_url && cfg.image_upload.api_key) {
+  if (fetchScreenshot && cfg.image_upload.enabled && cfg.image_upload.api_url && cfg.image_upload.api_key) {
     try {
       const screenshotResp = await fetch(browserRenderUrl, {
         method: 'POST',
         headers: internalHeaders,
-        body: JSON.stringify({ url: targetUrl, mode: 'screenshot', accountId: projectAccount.id }),
+        body: JSON.stringify({ url: targetUrl, mode: 'screenshot' }),
       });
       if (screenshotResp.ok) {
         const screenshotData = await screenshotResp.json() as any;

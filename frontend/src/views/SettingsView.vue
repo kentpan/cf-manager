@@ -456,29 +456,35 @@
     </n-modal>
 
     <!-- 抓取结果预览 Modal -->
-    <n-modal v-model:show="showFetchResult" preset="card" title="抓取结果预览" style="width: 640px; max-width: 95vw">
+    <n-modal v-model:show="showFetchResult" preset="card" :title="`抓取预览 - ${fetchResultData?.workerName || ''}`" style="width: 640px; max-width: 95vw">
       <div v-if="fetchResultData" style="display: flex; flex-direction: column; gap: 16px">
-        <!-- Screenshot preview -->
+        <!-- Screenshot preview + fetch button -->
         <div>
-          <div style="font-weight: 600; margin-bottom: 8px">截图</div>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px">
+            <span style="font-weight: 600">截图</span>
+            <n-button size="small" type="primary" ghost :loading="fetchingScreenshot" @click="fetchScreenshotOnly">
+              {{ fetchResultData.screenshotOk ? '重新抓取截图' : '抓取截图' }}
+            </n-button>
+          </div>
           <div v-if="fetchResultData.screenshotUrl" style="border: 1px solid #eee; border-radius: 8px; overflow: hidden">
             <img :src="fetchResultData.screenshotUrl" :alt="fetchResultData.workerName" style="width: 100%; display: block" />
           </div>
-          <n-alert v-else type="warning" :bordered="false" style="font-size: 13px">
-            截图抓取失败: {{ fetchResultData.screenshotError || '未知错误' }}
+          <n-alert v-else-if="fetchResultData.screenshotError" type="warning" :bordered="false" style="font-size: 13px">
+            截图抓取失败: {{ fetchResultData.screenshotError }}
           </n-alert>
-          <n-space style="margin-top: 8px" v-if="!fetchResultData.screenshotOk">
-            <n-button size="small" type="warning" :loading="fetchingMetadata === `${fetchResultData.accountId}-${fetchResultData.workerName}`" @click="fetchMetadataForItem(fetchResultData.accountId, fetchResultData.workerName); showFetchResult = false">
-              重试截图
-            </n-button>
-          </n-space>
+          <n-text v-else depth="3" style="font-size: 13px">点击上方按钮抓取截图</n-text>
         </div>
 
-        <!-- Title -->
+        <!-- Title + fetch button -->
         <div>
-          <div style="font-weight: 600; margin-bottom: 4px">页面标题 (title)</div>
-          <n-input :value="fetchResultData.title" readonly type="text" />
-          <n-alert v-if="!fetchResultData.htmlOk" type="warning" :bordered="false" style="font-size: 13px; margin-top: 4px">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px">
+            <span style="font-weight: 600">页面标题 (title)</span>
+            <n-button size="small" type="primary" ghost :loading="fetchingHtml" @click="fetchHtmlOnly">
+              {{ fetchResultData.htmlOk ? '重新抓取 Title' : '抓取 Title/Description' }}
+            </n-button>
+          </div>
+          <n-input :value="fetchResultData.title" readonly type="text" placeholder="点击上方按钮抓取" />
+          <n-alert v-if="fetchResultData.htmlError" type="warning" :bordered="false" style="font-size: 13px; margin-top: 4px">
             Title/Description 抓取失败: {{ fetchResultData.htmlError }}
           </n-alert>
         </div>
@@ -486,26 +492,13 @@
         <!-- Description -->
         <div>
           <div style="font-weight: 600; margin-bottom: 4px">页面描述 (description)</div>
-          <n-input :value="fetchResultData.description" readonly type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" />
-        </div>
-
-        <!-- Target URL -->
-        <div>
-          <div style="font-weight: 600; margin-bottom: 4px">抓取目标 URL</div>
-          <n-text depth="3" style="font-size: 12px; font-family: monospace">{{ fetchResultData.targetUrl }}</n-text>
+          <n-input :value="fetchResultData.description" readonly type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" placeholder="点击上方按钮抓取" />
         </div>
 
         <!-- Status summary -->
         <n-space>
-          <n-tag :type="fetchResultData.htmlOk ? 'success' : 'error'" size="small">Title/Description: {{ fetchResultData.htmlOk ? '✓' : '✗' }}</n-tag>
-          <n-tag :type="fetchResultData.screenshotOk ? 'success' : 'error'" size="small">截图: {{ fetchResultData.screenshotOk ? '✓' : '✗' }}</n-tag>
-        </n-space>
-
-        <!-- Retry all -->
-        <n-space v-if="!fetchResultData.htmlOk || !fetchResultData.screenshotOk">
-          <n-button size="small" type="primary" :loading="fetchingMetadata === `${fetchResultData.accountId}-${fetchResultData.workerName}`" @click="fetchMetadataForItem(fetchResultData.accountId, fetchResultData.workerName); showFetchResult = false">
-            重新抓取全部
-          </n-button>
+          <n-tag :type="fetchResultData.htmlOk ? 'success' : 'default'" size="small">Title/Description: {{ fetchResultData.htmlOk ? '✓' : '未抓取' }}</n-tag>
+          <n-tag :type="fetchResultData.screenshotOk ? 'success' : 'default'" size="small">截图: {{ fetchResultData.screenshotOk ? '✓' : '未抓取' }}</n-tag>
         </n-space>
       </div>
       <template #footer>
@@ -863,38 +856,81 @@ async function saveImageUploadConfig() {
 }
 
 async function fetchMetadataForItem(accountId: number, workerName: string) {
-  const key = `${accountId}-${workerName}`;
-  fetchingMetadata.value = key;
+  // Don't fetch immediately — just open the result modal with empty data.
+  // The user clicks "抓取 Title/Description" and "抓取截图" buttons
+  // separately inside the modal to avoid two simultaneous browser-render
+  // requests (which causes 429).
+  const item = aggregateSelectionDraft.value.find(it => it.account_id === accountId && it.worker_name === workerName);
+  fetchResultData.value = {
+    workerName,
+    title: item?.title || '',
+    description: item?.description || '',
+    screenshotUrl: item?.screenshot ? (aggregateConfig.value.image_upload.cdn_host.replace(/\/+$/, '') + (item.screenshot.startsWith('/') ? item.screenshot : '/' + item.screenshot)) : '',
+    htmlOk: !!(item?.title || item?.description),
+    htmlError: '',
+    screenshotOk: !!item?.screenshot,
+    screenshotError: '',
+    targetUrl: '',
+    accountId,
+  };
+  showFetchResult.value = true;
+}
+
+// Separate fetch functions for the modal buttons
+const fetchingHtml = ref(false);
+const fetchingScreenshot = ref(false);
+
+async function fetchHtmlOnly() {
+  if (!fetchResultData.value) return;
+  fetchingHtml.value = true;
   try {
     const { data } = await apiClient.post('/settings/aggregate-homepage/fetch-metadata', {
-      account_id: accountId,
-      worker_name: workerName,
+      account_id: fetchResultData.value.accountId,
+      worker_name: fetchResultData.value.workerName,
+      mode: 'html',
     });
-    // Update the draft item with the fetched metadata
-    const item = aggregateSelectionDraft.value.find(it => it.account_id === accountId && it.worker_name === workerName);
+    fetchResultData.value.title = data.item?.title || '';
+    fetchResultData.value.description = data.item?.description || '';
+    fetchResultData.value.htmlOk = data.status?.html_ok ?? !!data.item?.title;
+    fetchResultData.value.htmlError = data.status?.html_error || '';
+    // Update the draft item
+    const item = aggregateSelectionDraft.value.find(it => it.account_id === fetchResultData.value!.accountId && it.worker_name === fetchResultData.value!.workerName);
     if (item) {
-      item.title = data.item.title;
-      item.description = data.item.description;
-      item.screenshot = data.item.screenshot;
+      item.title = data.item?.title || '';
+      item.description = data.item?.description || '';
     }
-    // Show a result modal with preview + status + retry buttons
-    fetchResultData.value = {
-      workerName,
-      title: data.item.title || '',
-      description: data.item.description || '',
-      screenshotUrl: data.item.screenshot_url || '',
-      htmlOk: data.status?.html_ok ?? !!data.item.title,
-      htmlError: data.status?.html_error || '',
-      screenshotOk: data.status?.screenshot_ok ?? !!data.item.screenshot,
-      screenshotError: data.status?.screenshot_error || '',
-      targetUrl: data.status?.target_url || '',
-      accountId,
-    };
-    showFetchResult.value = true;
+    if (data.item?.title) message.success(`已抓取: ${data.item.title}`);
+    else message.warning('未获取到 title/description');
   } catch (err: any) {
-    message.error(err?.errorMessage || '抓取失败');
+    message.error(err?.errorMessage || '抓取 title/description 失败');
   } finally {
-    fetchingMetadata.value = '';
+    fetchingHtml.value = false;
+  }
+}
+
+async function fetchScreenshotOnly() {
+  if (!fetchResultData.value) return;
+  fetchingScreenshot.value = true;
+  try {
+    const { data } = await apiClient.post('/settings/aggregate-homepage/fetch-metadata', {
+      account_id: fetchResultData.value.accountId,
+      worker_name: fetchResultData.value.workerName,
+      mode: 'screenshot',
+    });
+    fetchResultData.value.screenshotUrl = data.item?.screenshot_url || '';
+    fetchResultData.value.screenshotOk = data.status?.screenshot_ok ?? !!data.item?.screenshot;
+    fetchResultData.value.screenshotError = data.status?.screenshot_error || '';
+    // Update the draft item
+    const item = aggregateSelectionDraft.value.find(it => it.account_id === fetchResultData.value!.accountId && it.worker_name === fetchResultData.value!.workerName);
+    if (item) {
+      item.screenshot = data.item?.screenshot || '';
+    }
+    if (data.item?.screenshot_url) message.success('截图抓取成功');
+    else message.error(`截图抓取失败: ${data.status?.screenshot_error || '未知错误'}`);
+  } catch (err: any) {
+    message.error(err?.errorMessage || '截图抓取失败');
+  } finally {
+    fetchingScreenshot.value = false;
   }
 }
 
