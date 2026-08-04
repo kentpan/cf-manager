@@ -23,6 +23,7 @@ import tunnelsRouter from './routes/tunnels';
 import aiRouter from './routes/ai';
 import aggregateHomepageRouter from './routes/aggregateHomepage';
 import domainProvidersRouter from './routes/domainProviders';
+import pagesAggregatorRouter from './routes/pagesAggregator';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -97,6 +98,7 @@ app.route('/api/store', storeRouter);
 app.route('/api/tunnels', tunnelsRouter);
 app.route('/api/ai', aiRouter);
 app.route('/api/domain-providers', domainProvidersRouter);
+app.route('/api/pages-aggregator', pagesAggregatorRouter);
 
 app.get('/api/quota', async (c) => {
   await syncUsageFromCloudflare(c.env.DB, c.env.ENCRYPTION_KEY);

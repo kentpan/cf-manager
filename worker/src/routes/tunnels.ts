@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { Env } from '../types';
 import { getAllAccounts, getAccountById, addAuditLog } from '../db/models';
 import { isDemoAccount } from '../services/demo';
-import { cfFetch, cfFetchAll } from '../services/cfApi';
+import { cfFetch, cfFetchPage } from '../services/cfApi';
 import {
   listTunnelAccounts, listTunnels, createTunnel, deleteTunnel,
   getTunnelToken, getTunnelConnections, getTunnelConfig, updateTunnelConfig,
@@ -19,14 +19,27 @@ app.get('/accounts', async (c) => {
 app.get('/accounts/:id/tunnels', async (c) => {
   const account = await getAccountById(c.env.DB, parseInt(c.req.param('id'), 10));
   if (!account || !account.account_id) return c.json({ error: { code: 'BAD_ACCOUNT', message: '账户无效或未配置 account_id' } }, 400);
-  return c.json(await listTunnels(account, c.env.ENCRYPTION_KEY));
+  // Use cfFetchPage (single page, 1 subrequest) instead of cfFetchAll
+  // (which loops through all pages, potentially exceeding the 50-subrequest
+  // Workers platform limit). Most accounts have < 50 tunnels so the first
+  // page is enough; if there are more, the response includes total_pages
+  // so the frontend can fetch additional pages.
+  const page = parseInt(c.req.query('page') || '1', 10);
+  const result = await listTunnelsPaged(account, c.env.ENCRYPTION_KEY, page, 50);
+  return c.json(result);
 });
 
 app.get('/accounts/:id/zones', async (c) => {
   const account = await getAccountById(c.env.DB, parseInt(c.req.param('id'), 10));
   if (!account || !account.account_id) return c.json({ error: { code: 'BAD_ACCOUNT', message: '账户无效或未配置 account_id' } }, 400);
-  const zones = await cfFetchAll<any>(account, '/zones', c.env.ENCRYPTION_KEY, 50);
-  return c.json(zones.map((z) => ({ id: z.id, name: z.name })));
+  // Use single-page fetch to avoid subrequest limit
+  const page = parseInt(c.req.query('page') || '1', 10);
+  const result = await cfFetchPage<any>(account, '/zones', c.env.ENCRYPTION_KEY, page, 50);
+  return c.json({
+    zones: result.items.map((z) => ({ id: z.id, name: z.name })),
+    total_pages: result.total_pages,
+    current_page: result.current_page,
+  });
 });
 
 app.post('/accounts/:id/tunnels', async (c) => {

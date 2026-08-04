@@ -91,11 +91,12 @@ export async function cfFetchAll<T>(
   account: Account,
   path: string,
   encryptionKey: string,
-  perPage = 50
+  perPage = 50,
+  maxPages = 40,  // Workers 平台限制单次请求最多 50 个子请求, 留 10 个给其他调用
 ): Promise<T[]> {
   const all: T[] = [];
   let page = 1;
-  while (true) {
+  while (page <= maxPages) {
     const sep = path.includes('?') ? '&' : '?';
     const data = await cfFetch<CfListResponse<T>>(account, `${path}${sep}page=${page}&per_page=${perPage}`, encryptionKey);
     all.push(...(data.result || []));
@@ -103,4 +104,25 @@ export async function cfFetchAll<T>(
     page++;
   }
   return all;
+}
+
+/**
+ * 只拉取第一页数据 (用于避免子请求超限的场景, 如 tunnels list)
+ * 返回 { items, total_pages, current_page } 供前端按需翻页
+ */
+export async function cfFetchPage<T>(
+  account: Account,
+  path: string,
+  encryptionKey: string,
+  page = 1,
+  perPage = 50,
+): Promise<{ items: T[]; total_pages: number; current_page: number; total_count: number }> {
+  const sep = path.includes('?') ? '&' : '?';
+  const data = await cfFetch<CfListResponse<T>>(account, `${path}${sep}page=${page}&per_page=${perPage}`, encryptionKey);
+  return {
+    items: data.result || [],
+    total_pages: data.result_info?.total_pages ?? 1,
+    current_page: page,
+    total_count: data.result_info?.total_count ?? (data.result?.length ?? 0),
+  };
 }
