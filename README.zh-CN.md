@@ -56,7 +56,7 @@
 
 ## 快速开始
 
-> 三种部署方式可选，详见 [部署文档](docs/deploy.md)
+> 四种部署方式可选，详见 [部署文档](docs/deploy.md)
 
 <details open>
 <summary><strong>方式一：Fork 一键部署（最简单）</strong></summary>
@@ -134,6 +134,80 @@ chmod +x deploy.sh
 
 # 5. 访问 http://localhost:3000（或 http://localhost:3000/admin/ 如果设置了 BASE_URL）
 ```
+
+</details>
+
+<details>
+<summary><strong>方式四：Cloudflare Pages 拉取 GitHub 仓库自动部署（推荐用于持续部署）</strong></summary>
+
+适用于已 Fork 仓库到自己的 GitHub、希望每次 `git push` 后自动重建并部署到 Cloudflare Pages 的场景。无需手动上传 zip，无需预构建包下载 —— 全程由 GitHub Actions 完成。
+
+**工作原理**
+
+工作流定义在 `.github/workflows/pages-gh-deploy.yml`，触发条件为：每次推送到 `main`（或 `master`）分支，或在 Actions 页面手动 Run workflow。流程如下：
+
+1. 在 GitHub Actions runner 上 checkout 你的仓库。
+2. 通过 `wrangler whoami` 解析 Cloudflare Account ID。
+3. **幂等**创建 D1 数据库 + KV 命名空间（已存在则跳过，不会删除数据）。
+4. 在 D1 上执行 `worker/src/db/schema.sql`（CREATE TABLE IF NOT EXISTS）和 `worker/src/db/migrations.sql`（ALTER TABLE / INSERT OR IGNORE），保证数据库 schema 始终与代码同步。
+5. 构建 Vue 前端（`cd frontend && npm run build`），构建时设置 `VITE_BASE_URL=/admin/`，使 SPA 从 `/admin/` 路径加载。
+6. 通过 esbuild 把 Worker 后端打包成单文件 `public/_worker.js`，并把前端 dist 复制到 `worker/public/`，最终产物自包含。
+7. 若 Pages 项目不存在则 `wrangler pages project create` 创建；随后 `wrangler pages deploy` 部署。
+8. 通过 Cloudflare API 解析项目实际的 `*.pages.dev` 子域名，并作为 notice 与工作流摘要输出。
+
+**配置步骤**
+
+1. **Fork 本仓库**到你的 GitHub 账号。
+
+2. 在 Cloudflare 控制台创建一个 API Token（推荐使用细粒度 Token 而非 Global API Key），需要的权限：
+   - **Account → Cloudflare Pages → Edit**
+   - **Account → D1 → Edit**
+   - **Account → Workers KV Storage → Edit**
+   - **User → User Details → Read**（用于 `wrangler whoami` 解析 Account ID）
+   保存好 Token，第 4 步会粘贴到 GitHub。
+
+3. 生成一个高强度随机字符串（至少 16 位）作为 `ENCRYPTION_KEY` —— 用于加密存储在 D1 中的 API Token。**请保持稳定**，若以后修改会导致已加密的凭证无法解密，需重新录入。
+
+4. 在你的 Fork 仓库 → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**，添加：
+   - `CLOUDFLARE_API_TOKEN` —— 第 2 步生成的 Token（推荐）。
+   - 如果走 legacy 路径：用 `CLOUDFLARE_API_KEY` + `CLOUDFLARE_EMAIL`（Global API Key + 账号邮箱）替代 Token。
+   - `ENCRYPTION_KEY` —— 第 3 步生成的随机字符串（必填）。
+   - `API_SECRET` —— 管理界面登录密码（可选，留空则无需登录）。
+
+5. （可选）如果需要按环境隔离 secrets（如 staging/prod 分离），到 **Settings → Environments → New environment**，创建 `production` 环境，把同样的 secrets 配在该环境下。手动触发工作流并选择 `production` 时会优先使用环境级 secrets。
+
+6. 推送到 `main`（或在 **Actions → Deploy to Cloudflare Pages (Auto on Push) → Run workflow** 手动触发）。首次运行约 3–5 分钟，会自动完成：
+
+   - 创建 D1 数据库 `cfmgr`（可用 `D1_DATABASE_NAME` 仓库变量覆盖）。
+   - 创建 KV 命名空间 `cfmgr`（可用 `KV_NAMESPACE_NAME` 覆盖）。
+   - 创建 Pages 项目 `cfmgr`（可用 `PROJECT_NAME` 覆盖）。
+   - 部署并输出访问地址 `https://<项目子域名>.pages.dev/admin/`。
+
+7. 打开 URL。若设置了 `API_SECRET`，首次访问会显示登录页；否则直接进入仪表盘。
+
+**自定义资源名称**
+
+在仓库 Settings → Secrets and variables → Actions → **Variables** 页签（注意不是 Secrets）添加仓库变量来覆盖默认值：
+
+| 变量名 | 默认值 | 用途 |
+|---|---|---|
+| `PROJECT_NAME` | `cfmgr` | Cloudflare Pages 项目名 |
+| `D1_DATABASE_NAME` | `cfmgr` | D1 数据库名 |
+| `KV_NAMESPACE_NAME` | `cfmgr` | KV 命名空间名 |
+
+也可以手动触发工作流（Actions → Run workflow）时把名称作为输入传入。
+
+**后续推送**
+
+每次 `git push` 到 `main` 都会自动重跑工作流。D1/KV/Pages 资源会被复用（工作流先检查存在性再创建）。`worker/src/db/migrations.sql` 中的迁移语句会被重复执行（通过 `INSERT OR IGNORE` 和 `|| true` 保证幂等），所以新增的表/列/种子数据会自动应用，不会丢数据。
+
+**并发控制**
+
+工作流使用 `concurrency: pages-deploy-${{ github.ref }}` + `cancel-in-progress: true`，新 push 会取消同分支上正在进行的旧部署，不会堆积陈旧构建。
+
+**回滚**
+
+Cloudflare Pages 会保留每次部署。在 Dashboard 打开 Pages 项目 → **Deployments** → 找到历史版本 → **Activate alias** 即可一键回滚，无需重跑工作流。
 
 </details>
 

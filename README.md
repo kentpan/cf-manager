@@ -56,7 +56,7 @@
 
 ## Quick Start
 
-> Three deployment options are available. See the [deployment docs](docs/deploy.md) for details.
+> Four deployment options are available. See the [deployment docs](docs/deploy.md) for details.
 
 <details open>
 <summary><strong>Option 1: Fork One-Click Deploy (easiest)</strong></summary>
@@ -134,6 +134,80 @@ chmod +x deploy.sh
 
 # 5. Visit http://localhost:3000 (or http://localhost:3000/admin/ if BASE_URL is set)
 ```
+
+</details>
+
+<details>
+<summary><strong>Option 4: Cloudflare Pages auto-deploy from GitHub (recommended for continuous deployment)</strong></summary>
+
+This is the recommended path for forks that want every `git push` to automatically rebuild and redeploy Cloudflare Pages. No manual uploads, no prebuilt bundle downloads — GitHub Actions handles everything.
+
+**How it works**
+
+The workflow at `.github/workflows/pages-gh-deploy.yml` triggers on every push to `main` (or `master`). It:
+
+1. Checks out your repo on the GitHub Actions runner.
+2. Resolves your Cloudflare Account ID via `wrangler whoami`.
+3. Creates the D1 database + KV namespace **if they don't already exist** (idempotent — re-running on an existing project won't delete data).
+4. Runs `worker/src/db/schema.sql` (CREATE TABLE IF NOT EXISTS) and `worker/src/db/migrations.sql` (ALTER TABLE / INSERT OR IGNORE) on the D1 database so the schema always matches the code.
+5. Builds the frontend (`npm run build` inside `frontend/`) with `VITE_BASE_URL=/admin/` so the SPA loads from the `/admin/` path.
+6. Bundles the worker (`esbuild src/index.ts → public/_worker.js`) and copies the frontend dist into `worker/public/` so the final bundle is self-contained.
+7. Creates the Pages project if it doesn't exist (`wrangler pages project create`), then deploys (`wrangler pages deploy`).
+8. Resolves the `*.pages.dev` subdomain from the Cloudflare API and prints it as a notice + in the workflow summary.
+
+**Setup steps**
+
+1. **Fork this repo** to your own GitHub account.
+
+2. In the Cloudflare dashboard, create an API token with these permissions (the scoped token is preferred over the Global API Key):
+   - **Account → Cloudflare Pages → Edit**
+   - **Account → D1 → Edit**
+   - **Account → Workers KV Storage → Edit**
+   - **User → User Details → Read** (needed for `wrangler whoami` to resolve your Account ID)
+   - Save the token — you'll paste it into GitHub in step 4.
+
+3. Generate a strong random string (at least 16 chars) for `ENCRYPTION_KEY` — this is what encrypts the API tokens stored in D1. Keep it stable across redeploys; if you change it later, you'll need to re-enter credentials.
+
+4. In your fork → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**, add:
+   - `CLOUDFLARE_API_TOKEN` — the token from step 2 (recommended).
+   - If you prefer the legacy path: `CLOUDFLARE_API_KEY` + `CLOUDFLARE_EMAIL` (Global API Key + account email) instead of the token.
+   - `ENCRYPTION_KEY` — the random string from step 3 (required).
+   - `API_SECRET` — management UI login password (optional; empty = no login required).
+
+5. (Optional) If you want per-environment secrets (e.g. separate staging/prod), go to **Settings → Environments → New environment**, name it `production`, and add the same secrets there. The workflow will use Environment secrets when triggered manually with `environment: production`.
+
+6. Push to `main` (or run the workflow manually from **Actions → Deploy to Cloudflare Pages (Auto on Push) → Run workflow**). The first run takes ~3–5 minutes and will:
+
+   - Create the D1 database named `cfmgr` (override with `D1_DATABASE_NAME` repository variable).
+   - Create the KV namespace named `cfmgr` (override with `KV_NAMESPACE_NAME`).
+   - Create the Pages project named `cfmgr` (override with `PROJECT_NAME`).
+   - Deploy and print the URL `https://<project-subdomain>.pages.dev/admin/`.
+
+7. Open the URL. The first load shows a login screen if `API_SECRET` is set; otherwise it goes straight to the dashboard.
+
+**Customising the resource names**
+
+Add repository variables (Settings → Secrets and variables → Actions → **Variables** tab — *not* secrets) to override the defaults:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PROJECT_NAME` | `cfmgr` | Cloudflare Pages project name |
+| `D1_DATABASE_NAME` | `cfmgr` | D1 database name |
+| `KV_NAMESPACE_NAME` | `cfmgr` | KV namespace title |
+
+Or trigger the workflow manually (**Actions → Run workflow**) and pass the names as inputs.
+
+**Subsequent pushes**
+
+Every `git push` to `main` re-runs the workflow. The D1/KV/Pages resources are reused (the workflow checks for existence before creating). Schema migrations in `worker/src/db/migrations.sql` are re-applied (idempotent via `INSERT OR IGNORE` and `|| true` on `ALTER TABLE`), so new tables/columns/seed rows are added automatically.
+
+**Concurrency control**
+
+The workflow uses `concurrency: pages-deploy-${{ github.ref }}` with `cancel-in-progress: true`, so a new push cancels any in-flight deploy for the same branch — no stale builds pile up.
+
+**Rolling back**
+
+Cloudflare Pages keeps every deployment. Open the Pages project in the dashboard → **Deployments** → find the previous version → **Activate alias** to roll back instantly without re-running the workflow.
 
 </details>
 
