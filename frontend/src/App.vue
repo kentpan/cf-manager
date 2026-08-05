@@ -149,8 +149,11 @@ const loginLoading = ref(false);
 const appVersion = ref('');
 const appCommit = ref('');
 
-// 公开路由（fakeNginx / 聚合首页）不包裹 admin layout，也不需要鉴权
-const isPublicRoute = computed(() => route.name === 'home' || route.name === 'aggregate-homepage');
+// 公开路由（fakeNginx / 聚合首页）不包裹 admin layout，也不需要鉴权。
+// admin path 下的 home 路由会由 router.beforeEach 重定向到 dashboard，
+// 这里加 isAdminPath 防御性判断：admin path 下永不走公开路由分支。
+const isAdminPath = computed(() => window.location.pathname.startsWith('/admin'));
+const isPublicRoute = computed(() => !isAdminPath.value && (route.name === 'home' || route.name === 'aggregate-homepage'));
 
 function applyVersion(data: any) {
   appVersion.value = data?.version || '';

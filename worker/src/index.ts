@@ -145,17 +145,33 @@ app.all('/admin/*', async (c) => {
 });
 
 app.all('*', async (c) => {
-  // Root path '/' and '/aggregate-homepage' — always serve the SPA
-  // index.html so HomeRedirect.vue renders the aggregate homepage.
-  // No enabled/items check — the homepage is always shown.
+  // 兜底路由：所有非 API、非 /admin/* 的请求都返回 SPA index.html，
+  // 让 vue-router 处理深链接刷新（如 /dashboard、/aggregate-homepage）。
+  // HomeRedirect.vue 内部根据 /api/aggregate-homepage 的 enabled 配置决定
+  // 渲染聚合首页还是 fakeNginx（聚合首页禁用态）。
   const url = new URL(c.req.url);
-  if ((url.pathname === '/' || url.pathname === '/aggregate-homepage' || url.pathname === '') && c.env.ASSETS) {
+
+  // API / 外部 API 路径不应到达此兜底（上游已有路由匹配），防御性返回 fakeNginx 404
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/v1/')) {
+    return c.html(getFakeNginxPage(), 404);
+  }
+
+  // 静态资源文件（带后缀）交给 ASSETS binding 处理
+  if (/\.\w+$/.test(url.pathname) && c.env.ASSETS) {
+    const res = await c.env.ASSETS.fetch(new Request(url.toString()));
+    if (res.status !== 404) return res;
+  }
+
+  // 其他路径（/、/aggregate-homepage、/dashboard 等）返回 SPA index.html
+  if (c.env.ASSETS) {
     const index = await c.env.ASSETS.fetch(new Request(new URL('/index.html', url.origin).toString()));
     return new Response(index.body, {
       status: 200,
       headers: new Headers(index.headers),
     });
   }
+
+  // ASSETS binding 不存在（理论上不会发生）—— 返回 fakeNginx 兜底
   return c.html(getFakeNginxPage());
 });
 

@@ -25,9 +25,24 @@ const routes = [
   { path: '/aggregate-homepage', name: 'aggregate-homepage', component: () => import('../views/AggregateHomepageView.vue') },
 ];
 
+// Router base 动态化：生产环境前端构建时 VITE_BASE_URL=/admin/，但访问 /
+// 或 /aggregate-homepage 时 pathname 不在 /admin/ 下，会导致 vue-router
+// 无法匹配并重定向到 /admin/。这里按当前 pathname 动态选择 base：
+//   - /admin/*  → base=/admin/（admin 后台入口）
+//   - 其他      → base=/（聚合首页 / 深链接刷新）
+const base = window.location.pathname.startsWith('/admin') ? '/admin/' : '/';
+
 const router = createRouter({
-  history: createWebHistory(import.meta.env.BASE_URL),
+  history: createWebHistory(base),
   routes,
+});
+
+// admin path 下访问根路径（即 /admin/）自动重定向到 dashboard —— admin 入口
+// 应显示登录/dashboard，而不是 HomeRedirect（聚合首页）。
+router.beforeEach((to) => {
+  if (base === '/admin/' && to.name === 'home') {
+    return { name: 'dashboard' };
+  }
 });
 
 export default router;
