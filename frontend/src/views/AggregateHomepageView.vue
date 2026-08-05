@@ -4,7 +4,7 @@
       <!-- Header -->
       <header class="ah-header">
         <div class="ah-header__title-wrap">
-          <h1 class="ah-header__title">{{ config.title || '作品集' }}</h1>
+          <h1 class="ah-header__title">{{ config.title || '项目展示' }}</h1>
           <p class="ah-header__subtitle">{{ config.subtitle || 'Projects & Demos' }}</p>
         </div>
         <div class="ah-header__meta">
@@ -113,7 +113,7 @@ async function loadConfig() {
     config.value = {
       enabled: !!data.enabled,
       theme: data.theme === 'brutalism' ? 'brutalism' : 'default',
-      title: data.title || '作品集',
+      title: data.title || '项目展示',
       subtitle: data.subtitle || 'Projects & Demos',
       items: Array.isArray(data.items) ? data.items : [],
     };

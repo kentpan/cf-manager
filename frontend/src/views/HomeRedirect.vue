@@ -14,7 +14,7 @@
       <div class="ah-container">
         <header class="ah-header">
           <div class="ah-header__title-wrap">
-            <h1 class="ah-header__title">{{ config.title || '作品集' }}</h1>
+            <h1 class="ah-header__title">{{ config.title || '项目展示' }}</h1>
             <p class="ah-header__subtitle">{{ config.subtitle || 'Projects & Demos' }}</p>
           </div>
           <div class="ah-header__meta">
