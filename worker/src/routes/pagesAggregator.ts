@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from '../types';
 import { getActiveAccountsByFeature } from '../db/models';
-import { cfFetchAll } from '../services/cfApi';
+import { cfFetch } from '../services/cfApi';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -48,19 +48,20 @@ app.get('/', async (c) => {
       };
     }
     try {
-      // 只聚合 Pages projects（与 backend 行为一致），不混入 workers scripts
-      const projects = await cfFetchAll<any>(
+      // 只聚合 Pages projects（与 backend 行为一致），不混入 workers scripts。
+      // 用 cfFetch 不加 page/per_page：CF Pages API 不支持 page 参数（400 错误码 8000024），
+      // 与 aggregateHomepage.ts:115 / workers.ts:39 既有惯例一致。
+      const data = await cfFetch<{ result: any[] }>(
         account,
         `/accounts/${account.account_id}/pages/projects`,
         c.env.ENCRYPTION_KEY,
-        50,
       );
       return {
         account_id: account.id,
         account_name: account.name,
         account_email: account.email,
         cf_account_id: account.account_id,
-        projects: projects.map(mapPageProject),
+        projects: (data.result || []).map(mapPageProject),
         error: null,
         error_kind: null,
       };
@@ -113,22 +114,20 @@ app.get('/detailed', async (c) => {
   await Promise.all(accounts.map(async (account) => {
     if (!account.account_id) return;
     try {
-      const projects = await cfFetchAll<any>(
+      const projectsData = await cfFetch<{ result: any[] }>(
         account,
         `/accounts/${account.account_id}/pages/projects`,
         c.env.ENCRYPTION_KEY,
-        50,
       );
-      await Promise.all(projects.map(async (p) => {
+      await Promise.all((projectsData.result || []).map(async (p) => {
         let extraDomains: string[] = [];
         try {
-          const domains = await cfFetchAll<any>(
+          const domainsData = await cfFetch<{ result: any[] }>(
             account,
             `/accounts/${account.account_id}/pages/projects/${encodeURIComponent(p.name)}/domains`,
             c.env.ENCRYPTION_KEY,
-            50,
           );
-          extraDomains = (domains || []).map((d: any) => d.name).filter(Boolean);
+          extraDomains = (domainsData.result || []).map((d: any) => d.name).filter(Boolean);
         } catch (err) {
           console.warn(`[PagesAggregator] listPagesDomains failed for ${p.name} (${account.name}): ${err}`);
         }
