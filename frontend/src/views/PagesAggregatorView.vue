@@ -157,9 +157,9 @@
           :y-gap="10"
           responsive="screen"
           item-responsive
-          style="width: 100%"
+          style="width: 100%;height: 100%;align-items: start;"
         >
-          <n-gi v-for="p in filteredProjects" :key="`${p.account_id}-${p.id}`">
+          <n-gi v-for="p in filteredProjects" :key="`${p.account_id}-${p.id}`" style="height: 100%;box-sizing: border-box;">
             <div class="pages-card">
               <div class="pages-card__head">
                 <div class="pages-card__title-row">
@@ -173,16 +173,17 @@
                   <span class="pages-card__label">入口域名</span>
                   <div class="pages-card__domains">
                     <n-button
-                      v-for="d in (p.domains || [`${p.name}.pages.dev`]).slice(0, 3)"
+                      v-for="d in (p.domains || [`${p.name}.pages.dev`]).slice(0, 5).reverse()"
                       :key="d"
                       size="tiny"
                       text
                       type="primary"
                       @click="openEntry(d)"
+                      class="w-full !justify-start"
                     >
                       <span class="pages-card__domain">
                         <n-icon :component="GlobeOutline" :size="12" />
-                        <span class="pages-card__domain-text">{{ d }}</span>
+                        <span class="pages-card__domain-text" :title="d">{{ d }}</span>
                       </span>
                     </n-button>
                   </div>
@@ -258,16 +259,17 @@
                     <span class="pages-card__label">入口域名</span>
                     <div class="pages-card__domains">
                       <n-button
-                        v-for="d in (p.domains || [`${p.name}.pages.dev`]).slice(0, 3)"
+                        v-for="d in (p.domains || [`${p.name}.pages.dev`]).slice(0, 5).reverse()"
                         :key="d"
                         size="tiny"
                         text
                         type="primary"
                         @click="openEntry(d)"
+                        class="block"
                       >
                         <span class="pages-card__domain">
                           <n-icon :component="GlobeOutline" :size="12" />
-                          <span class="pages-card__domain-text">{{ d }}</span>
+                          <span class="pages-card__domain-text" :title="d">{{ d }}</span>
                         </span>
                       </n-button>
                     </div>
@@ -320,7 +322,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import {
-  SearchOutline, PeopleOutline, GlobeOutline, OpenOutline, RocketOutline,
+  SearchOutline, PeopleOutline, GlobeOutline, OpenOutline, RocketOutline, LinkOutline,
 } from '@vicons/ionicons5';
 import { useMessage } from 'naive-ui';
 import { pagesAggregatorApi, type AggregatedPageProject, type PagesAggregatorResponse } from '../api/pagesAggregator';
@@ -502,7 +504,7 @@ onMounted(() => {
   width: 100%;
   max-height: calc(100vh - 280px);
   overflow-y: auto;
-  padding-right: 4px;
+  padding: 30px 10px 30px 0;
 }
 
 .stat-card {
