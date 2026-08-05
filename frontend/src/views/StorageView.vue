@@ -334,23 +334,27 @@ async function checkR2Available() {
     if (activeTab.value === 'r2') activeTab.value = 'kv';
     return;
   }
-  // 空值 = 未探测，保留默认值 true
+  // 空值 = 未探测，默认可用（避免切到 -r2 账号后再切回未探测账号时 R2 tab 仍隐藏）
+  r2Available.value = true;
 }
 
 async function onAccountChange() {
   await checkR2Available();
-  // Clear all selected items from the previous account so we don't
-  // accidentally call APIs with the old account's resource IDs against
-  // the new account (e.g. D1 database UUID from account A queried via
-  // account B's credentials → 404 "database could not be found").
+  // 切换账号时必须清空所有列表缓存，否则 watch activeTab 的懒加载判断
+  // (!xxx.value.length) 会因旧数据存在而跳过重新加载，导致显示旧账号资源
+  // 并用新账号凭证查询旧资源 ID → 报错或返回空
+  kvNamespaces.value = [];
   selectedKvNs.value = null;
   kvKeys.value = [];
   kvCursor.value = '';
+  d1Databases.value = [];
   selectedD1Db.value = null;
   d1Tables.value = [];
   d1Result.value = null;
+  r2Buckets.value = [];
   selectedR2Bucket.value = null;
   r2Objects.value = [];
+  r2Prefixes.value = [];
   r2Prefix.value = '';
   if (activeTab.value === 'kv') loadKvNamespaces();
   else if (activeTab.value === 'd1') loadD1Databases();

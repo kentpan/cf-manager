@@ -74,11 +74,18 @@ app.get('/:accountId/kv/:nsId/values/:key', async (c) => {
 app.put('/:accountId/kv/:nsId/values/:key', async (c) => {
   const account = await requireAccount(c);
   const key = decodeURIComponent(c.req.param('key'));
-  const { value, metadata } = await c.req.json();
+  // 与 backend storageService.putKvValue 对齐：读取 expiration / expiration_ttl / metadata
+  // Cloudflare KV API 要求 expiration* 通过 query 参数传递（非 form data）
+  const { value, metadata, expiration, expiration_ttl } = await c.req.json();
   const form = new FormData();
   form.append('value', value);
   if (metadata) form.append('metadata', JSON.stringify(metadata));
-  await cfFetchRaw(account, `${acctPath(account)}/storage/kv/namespaces/${c.req.param('nsId')}/values/${encodeURIComponent(key)}`, c.env.ENCRYPTION_KEY, {
+  const qs = new URLSearchParams();
+  if (expiration) qs.set('expiration', String(expiration));
+  if (expiration_ttl) qs.set('expiration_ttl', String(expiration_ttl));
+  const query = qs.toString();
+  const url = `${acctPath(account)}/storage/kv/namespaces/${c.req.param('nsId')}/values/${encodeURIComponent(key)}${query ? '?' + query : ''}`;
+  await cfFetchRaw(account, url, c.env.ENCRYPTION_KEY, {
     method: 'PUT', body: form,
   });
   return c.json({ success: true });
@@ -145,10 +152,15 @@ app.get('/:accountId/d1/:dbId/tables/:tableName/schema', async (c) => {
 
 app.post('/:accountId/d1/:dbId/query', async (c) => {
   const account = await requireAccount(c);
-  const { sql, params } = await c.req.json();
+  // 与 backend storage.ts:166-176 对齐：读取 allowWrite，写操作要求 allowWrite:true
+  const { sql, params, allowWrite } = await c.req.json();
   if (!sql) return c.json({ error: { code: 'VALIDATION_ERROR', message: 'sql is required' } }, 400);
-  if (/^\s*(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|REPLACE)\b/i.test(sql) && isDemoAccount(account.id, c.env.DEMO_ACCOUNT_IDS)) {
+  const isWrite = /^\s*(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|REPLACE)\b/i.test(sql);
+  if (isWrite && isDemoAccount(account.id, c.env.DEMO_ACCOUNT_IDS)) {
     return c.json({ error: { code: 'DEMO_PROTECTED', message: '演示账户的 D1 数据库不可执行写操作（建/删/改）' } }, 403);
+  }
+  if (isWrite && !allowWrite) {
+    return c.json({ error: { code: 'WRITE_NOT_ALLOWED', message: 'Write query requires allowWrite: true' } }, 400);
   }
   const data = await cfFetch(account, `${acctPath(account)}/d1/database/${c.req.param('dbId')}/query`, c.env.ENCRYPTION_KEY, {
     method: 'POST', body: JSON.stringify({ sql, params: params || [] }),
