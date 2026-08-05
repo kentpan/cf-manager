@@ -322,7 +322,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import {
-  SearchOutline, PeopleOutline, GlobeOutline, OpenOutline, RocketOutline, LinkOutline,
+  SearchOutline, PeopleOutline, GlobeOutline, OpenOutline, RocketOutline
 } from '@vicons/ionicons5';
 import { useMessage } from 'naive-ui';
 import { pagesAggregatorApi, type AggregatedPageProject, type PagesAggregatorResponse } from '../api/pagesAggregator';
