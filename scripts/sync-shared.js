@@ -43,6 +43,30 @@ const jobs = [
       'worker/src/services/catalogValidator.ts',
     ],
   },
+  {
+    name: 'deploy-types',
+    source: 'shared/deployTypes.ts',
+    targets: [
+      'backend/src/services/deploy/types.ts',
+      'worker/src/services/deploy/types.ts',
+    ],
+  },
+  {
+    name: 'pricing',
+    source: 'shared/pricing.ts',
+    targets: [
+      'backend/src/services/pricing.ts',
+      'worker/src/services/pricing.ts',
+    ],
+  },
+  {
+    name: 'account-utils',
+    source: 'shared/accountUtils.ts',
+    targets: [
+      'backend/src/services/accountUtils.ts',
+      'worker/src/services/accountUtils.ts',
+    ],
+  },
 ];
 
 function copyIfChanged(src, dest) {

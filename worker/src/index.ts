@@ -145,31 +145,16 @@ app.all('/admin/*', async (c) => {
 });
 
 app.all('*', async (c) => {
-  // Root path '/' and '/aggregate-homepage' — when the aggregate homepage
-  // is enabled, serve the Vue SPA's index.html so the router can render
-  // the portfolio/demo landing page. The SPA is normally served from
-  // /admin/, but we serve the same index.html at these root paths when
-  // the aggregate homepage is on so visitors land on the portfolio.
-  //
-  // When the aggregate homepage is disabled, fall back to the fake nginx
-  // welcome page (security-through-obscurity: hides the admin UI).
+  // Root path '/' and '/aggregate-homepage' — always serve the SPA
+  // index.html so HomeRedirect.vue renders the aggregate homepage.
+  // No enabled/items check — the homepage is always shown.
   const url = new URL(c.req.url);
-  if (url.pathname === '/' || url.pathname === '/aggregate-homepage' || url.pathname === '') {
-    try {
-      const raw = await getSetting(c.env.DB, 'aggregate_homepage');
-      if (raw) {
-        const cfg = JSON.parse(raw);
-        if (cfg.enabled && c.env.ASSETS) {
-          const index = await c.env.ASSETS.fetch(new Request(new URL('/index.html', url.origin).toString()));
-          return new Response(index.body, {
-            status: 200,
-            headers: new Headers(index.headers),
-          });
-        }
-      }
-    } catch {
-      // Config read failed — fall through to fake nginx.
-    }
+  if ((url.pathname === '/' || url.pathname === '/aggregate-homepage' || url.pathname === '') && c.env.ASSETS) {
+    const index = await c.env.ASSETS.fetch(new Request(new URL('/index.html', url.origin).toString()));
+    return new Response(index.body, {
+      status: 200,
+      headers: new Headers(index.headers),
+    });
   }
   return c.html(getFakeNginxPage());
 });

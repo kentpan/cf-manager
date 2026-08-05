@@ -204,7 +204,7 @@ router.get('/', async (_req: Request, res: Response, next: NextFunction) => {
     const cfg = readConfig();
     if (!cfg.enabled) {
       // Homepage disabled — frontend will redirect to the admin dashboard.
-      res.json({ enabled: false, theme: cfg.theme, title: cfg.title, subtitle: cfg.subtitle, items: [] });
+      res.json({ success: true, data: { enabled: false, theme: cfg.theme, title: cfg.title, subtitle: cfg.subtitle, items: [] } });
       return;
     }
 
@@ -256,11 +256,14 @@ router.get('/', async (_req: Request, res: Response, next: NextFunction) => {
       .sort((a, b) => a.sort_order - b.sort_order);
 
     res.json({
-      enabled: true,
-      theme: cfg.theme,
-      title: cfg.title,
-      subtitle: cfg.subtitle,
-      items: filtered,
+      success: true,
+      data: {
+        enabled: true,
+        theme: cfg.theme,
+        title: cfg.title,
+        subtitle: cfg.subtitle,
+        items: filtered,
+      },
     });
   } catch (err) { next(err); }
 });

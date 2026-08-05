@@ -108,7 +108,8 @@ async function loadConfig() {
   loading.value = true;
   try {
     const resp = await fetch('/api/aggregate-homepage');
-    const data = await resp.json();
+    const json = await resp.json();
+    const data = json.data || {};
     config.value = {
       enabled: !!data.enabled,
       theme: data.theme === 'brutalism' ? 'brutalism' : 'default',

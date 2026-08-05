@@ -21,6 +21,9 @@
               </n-card>
             </div>
 
+            <!-- 公开页面（fakeNginx / 聚合首页）— 不包裹 admin layout -->
+            <router-view v-else-if="isPublicRoute" />
+
             <!-- Desktop Layout -->
             <n-layout v-else-if="!isMobile" has-sider style="height: 100vh">
               <n-layout-sider bordered :width="220" :collapsed-width="64" collapse-mode="width" :collapsed="collapsed">
@@ -146,6 +149,9 @@ const loginLoading = ref(false);
 const appVersion = ref('');
 const appCommit = ref('');
 
+// 公开路由（fakeNginx / 聚合首页）不包裹 admin layout，也不需要鉴权
+const isPublicRoute = computed(() => route.name === 'home' || route.name === 'aggregate-homepage');
+
 function applyVersion(data: any) {
   appVersion.value = data?.version || '';
   appCommit.value = data?.git_commit || '';
@@ -237,6 +243,15 @@ onMounted(async () => {
     isAuthenticated.value = false;
     showLogin.value = true;
   });
+  // 公开路由（fakeNginx / 聚合首页）无需鉴权，直接渲染
+  // 等待路由解析完成再判断 route.name，否则初始加载时 route.name 为 undefined
+  // 会误走鉴权流程（请求 /api/settings 返回 401 触发登录界面）
+  await router.isReady();
+  if (isPublicRoute.value) {
+    authChecking.value = false;
+    showLogin.value = false;
+    return;
+  }
   try {
     const resp: any = await apiClient.get('/settings', { _silent: true });
     applyVersion(resp.data);

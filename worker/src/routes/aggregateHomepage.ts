@@ -194,7 +194,7 @@ app.get('/', async (c) => {
   const cfg = await readConfig(c.env);
   if (!cfg.enabled) {
     // Homepage disabled — frontend will redirect to the admin dashboard.
-    return c.json({ enabled: false, theme: cfg.theme, title: cfg.title, subtitle: cfg.subtitle, items: [] });
+    return c.json({ success: true, data: { enabled: false, theme: cfg.theme, title: cfg.title, subtitle: cfg.subtitle, items: [] } });
   }
 
   const cdnHost = cfg.image_upload.cdn_host;
@@ -241,11 +241,14 @@ app.get('/', async (c) => {
     .sort((a, b) => a.sort_order - b.sort_order);
 
   return c.json({
-    enabled: true,
-    theme: cfg.theme,
-    title: cfg.title,
-    subtitle: cfg.subtitle,
-    items: filtered,
+    success: true,
+    data: {
+      enabled: true,
+      theme: cfg.theme,
+      title: cfg.title,
+      subtitle: cfg.subtitle,
+      items: filtered,
+    },
   });
 });
 

@@ -183,7 +183,7 @@ app.put('/aggregate-homepage', async (c) => {
 // back into the aggregate_homepage config for that item.
 app.post('/aggregate-homepage/fetch-metadata', async (c) => {
   const body = await c.req.json().catch(() => ({}));
-  const { account_id, worker_name, mode } = body;
+  const { account_id, worker_name, mode, url, type, screenshot } = body;
   if (typeof account_id !== 'number' || typeof worker_name !== 'string') {
     return c.json({ error: { code: 'VALIDATION_ERROR', message: 'account_id (number) + worker_name (string) 必填' } }, 400);
   }
@@ -193,16 +193,28 @@ app.post('/aggregate-homepage/fetch-metadata', async (c) => {
 
   const cfg = await getAggregateConfig(c.env);
   const item = cfg.items.find(it => it.account_id === account_id && it.worker_name === worker_name);
-  if (!item) {
-    return c.json({ error: { code: 'NOT_FOUND', message: '该项目未在聚合首页配置中' } }, 404);
+  // 临时项目：未保存到配置时，基于请求参数构造临时 item 仅用于抓取，不回写配置。
+  // 这样用户在选择弹窗中点击「抓取」时无需先保存项目。对齐 backend 实现。
+  const tempItem: AggregateHomepageItem | null = item ? null : {
+    account_id,
+    worker_name,
+    type: type === 'pages' ? 'pages' : 'worker',
+    display_name: worker_name,
+    sort_order: 0,
+    ...(typeof url === 'string' && url ? { custom_url: url } : {}),
+    ...(typeof screenshot === 'string' && screenshot ? { screenshot: screenshot } : {}),
+  };
+  const target = item || tempItem;
+  if (!target) {
+    return c.json({ error: { code: 'VALIDATION_ERROR', message: '无法构造项目信息' } }, 400);
   }
 
   // Resolve the target URL
-  let targetUrl = item.custom_url || '';
+  let targetUrl = target.custom_url || '';
   if (!targetUrl) {
-    targetUrl = item.type === 'pages'
-      ? `https://${item.worker_name}.pages.dev`
-      : `https://${item.worker_name}.workers.dev`;
+    targetUrl = target.type === 'pages'
+      ? `https://${target.worker_name}.pages.dev`
+      : `https://${target.worker_name}.workers.dev`;
   } else if (!/^https?:\/\//i.test(targetUrl)) {
     targetUrl = `https://${targetUrl}`;
   }
@@ -212,7 +224,7 @@ app.post('/aggregate-homepage/fetch-metadata', async (c) => {
   // This avoids 429 rate-limit errors when one account is hammered by
   // all projects' screenshot captures.
   const { getAccountById, hasFeature } = await import('../db/models');
-  const projectAccount = await getAccountById(c.env.DB, item.account_id);
+  const projectAccount = await getAccountById(c.env.DB, target.account_id);
   if (!projectAccount || !projectAccount.account_id) {
     return c.json({ error: { code: 'ACCOUNT_NOT_FOUND', message: '项目所属账号不存在或未配置 account_id' } }, 400);
   }
@@ -222,7 +234,7 @@ app.post('/aggregate-homepage/fetch-metadata', async (c) => {
 
   let pageTitle = '';
   let pageDescription = '';
-  let screenshotPath = item.screenshot || '';
+  let screenshotPath = target.screenshot || '';
   let htmlFetchError = '';
   let screenshotError = '';
 
@@ -307,23 +319,26 @@ app.post('/aggregate-homepage/fetch-metadata', async (c) => {
     }
   }
 
-  // Update the item with the fetched metadata
-  item.title = pageTitle;
-  item.description = pageDescription;
-  if (screenshotPath && !screenshotError) item.screenshot = screenshotPath;
-  await setAggregateConfig(c.env, cfg);
+  // 仅当项目已保存到配置时才回写 metadata；临时项目不修改配置。对齐 backend。
+  if (item) {
+    item.title = pageTitle;
+    item.description = pageDescription;
+    if (screenshotPath && !screenshotError) item.screenshot = screenshotPath;
+    await setAggregateConfig(c.env, cfg);
+  }
 
   // Return detailed status so the frontend can show what succeeded/failed
   // and offer per-item retry for title/description vs screenshot.
+  const finalScreenshot = screenshotPath && !screenshotError ? screenshotPath : (target.screenshot || '');
   return c.json({
     success: true,
     item: {
-      account_id: item.account_id,
-      worker_name: item.worker_name,
-      title: item.title,
-      description: item.description,
-      screenshot: item.screenshot,
-      screenshot_url: item.screenshot ? resolveImageUrl(item.screenshot, cfg.image_upload.cdn_host) : '',
+      account_id: target.account_id,
+      worker_name: target.worker_name,
+      title: pageTitle,
+      description: pageDescription,
+      screenshot: finalScreenshot,
+      screenshot_url: finalScreenshot ? resolveImageUrl(finalScreenshot, cfg.image_upload.cdn_host) : '',
     },
     status: {
       html_ok: !htmlFetchError,

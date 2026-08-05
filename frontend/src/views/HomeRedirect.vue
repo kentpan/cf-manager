@@ -1,13 +1,16 @@
 <template>
   <div class="home-redirect">
-    <!-- 当聚合首页禁用时，自动跳转到 /admin/#/dashboard -->
+    <!-- 加载中 -->
     <div v-if="loading" class="home-redirect__loading">
       <div class="home-redirect__spinner"></div>
       <p class="home-redirect__text">{{ message }}</p>
     </div>
 
-    <!-- 当聚合首页启用时，直接内联渲染聚合首页内容（不跳转，不依赖 vue-router） -->
-    <div v-else-if="config.enabled" :class="['aggregate-homepage', `aggregate-homepage--${config.theme}`]">
+    <!-- 聚合首页禁用：显示伪装的 nginx 默认页（与 worker 端 getFakeNginxPage 行为一致） -->
+    <div v-else-if="!config.enabled" class="fake-nginx" v-html="fakeNginxHtml" />
+
+    <!-- 聚合首页启用：内联渲染聚合首页内容 -->
+    <div v-else :class="['aggregate-homepage', `aggregate-homepage--${config.theme}`]">
       <div class="ah-container">
         <header class="ah-header">
           <div class="ah-header__title-wrap">
@@ -78,10 +81,39 @@ const config = ref<AggregateConfig>({
   items: [],
 });
 
+// 伪装的 nginx 默认欢迎页（与 worker/src/pages/fakeNginx.ts 保持一致）
+const fakeNginxHtml = `<!DOCTYPE html>
+<html>
+<head>
+<title>Welcome to nginx!</title>
+<style>
+html { color-scheme: light dark; }
+body {
+    width: 35em;
+    margin: 0 auto;
+    font-family: Tahoma, Verdana, Arial, sans-serif;
+}
+</style>
+</head>
+<body>
+<h1>Welcome to nginx!</h1>
+<p>If you see this page, the nginx web server is successfully installed and
+working. Further configuration is required.</p>
+
+<p>For online documentation and support please refer to
+<a href="http://nginx.org/">nginx.org</a>.<br/>
+Commercial support is available at
+<a href="http://nginx.com/">nginx.com</a>.</p>
+
+<p><em>Thank you for using nginx.</em></p>
+</body>
+</html>`;
+
 onMounted(async () => {
   try {
     const resp = await fetch('/api/aggregate-homepage');
-    const data = await resp.json();
+    const json = await resp.json();
+    const data = json.data || {};
     config.value = {
       enabled: !!data.enabled,
       theme: data.theme === 'brutalism' ? 'brutalism' : 'default',
@@ -89,24 +121,18 @@ onMounted(async () => {
       subtitle: data.subtitle || 'Projects & Demos',
       items: Array.isArray(data.items) ? data.items : [],
     };
-    if (!data.enabled) {
-      // Aggregate homepage disabled — redirect to admin dashboard.
-      // Use the SPA's BASE_URL so it works on both /admin/ and /.
-      const base = import.meta.env.BASE_URL || '/';
-      window.location.replace(`${base}#/dashboard`);
-      return;
-    }
-    loading.value = false;
-  } catch {
-    // Config endpoint failed — redirect to admin dashboard.
-    const base = import.meta.env.BASE_URL || '/';
-    window.location.replace(`${base}#/dashboard`);
+  } catch(error: any) {
+    // Config endpoint failed — 默认显示 fakeNginx（聚合首页禁用态）
+    console.error('Failed to fetch aggregate homepage config', error);
   }
+  loading.value = false;
 });
 </script>
 
 <style scoped>
 .home-redirect { min-height: 100vh; }
+/* v-html 渲染的 fakeNginx 页面使用 :deep 让内部样式生效 */
+.fake-nginx { min-height: 100vh; }
 .home-redirect__loading {
   position: fixed; inset: 0;
   display: flex; flex-direction: column;

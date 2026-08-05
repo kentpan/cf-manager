@@ -136,9 +136,7 @@ export async function preflight(
   }
 
   // 6. 判定是否可以继续
-  const canProceed = warnings.filter(w => w.includes('移除') || w.includes('无效')).length === 0;
-
-  appLogger.info(`[Preflight] Worker ${params.name}: exists=${workerExists}, path=${deployPath}, canProceed=${canProceed}`);
+  appLogger.info(`[Preflight] Worker ${params.name}: exists=${workerExists}, path=${deployPath}`);
 
   return {
     workerExists,

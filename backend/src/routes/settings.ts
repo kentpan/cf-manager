@@ -292,7 +292,7 @@ router.put('/aggregate-homepage', (req, res) => {
 // the (potentially slow) browser-render call happens.
 router.post('/aggregate-homepage/fetch-metadata', async (req, res, next: NextFunction) => {
   try {
-    const { account_id, worker_name, mode } = req.body || {};
+    const { account_id, worker_name, mode, url, type, screenshot } = req.body || {};
     if (typeof account_id !== 'number' || typeof worker_name !== 'string') {
       res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'account_id (number) + worker_name (string) 必填' } });
       return;
@@ -303,20 +303,32 @@ router.post('/aggregate-homepage/fetch-metadata', async (req, res, next: NextFun
     const fetchScreenshot = mode !== 'html';
     const cfg = getAggregateConfig();
     const item = cfg.items.find(it => it.account_id === account_id && it.worker_name === worker_name);
-    if (!item) {
-      res.status(404).json({ error: { code: 'NOT_FOUND', message: '该项目未在聚合首页配置中' } });
+    // 临时项目：未保存到配置时，基于请求参数构造临时 item 仅用于抓取，不回写配置。
+    // 这样用户在选择弹窗中点击「抓取」时无需先保存项目。
+    const tempItem: AggregateHomepageItem | null = item ? null : {
+      account_id,
+      worker_name,
+      type: type === 'pages' ? 'pages' : 'worker',
+      display_name: worker_name,
+      sort_order: 0,
+      ...(typeof url === 'string' && url ? { custom_url: url } : {}),
+      ...(typeof screenshot === 'string' && screenshot ? { screenshot: screenshot } : {}),
+    };
+    const target = item || tempItem!;
+    if (!target) {
+      res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: '无法构造项目信息' } });
       return;
     }
 
     // Resolve the live URL for this item. We reuse the aggregate-homepage
     // route's resolver logic by importing it lazily (avoids circular import
     // at module load time).
-    let targetUrl = item.custom_url || '';
+    let targetUrl = target.custom_url || '';
     if (!targetUrl) {
       // Fall back to the canonical workers.dev / pages.dev URL
-      targetUrl = item.type === 'pages'
-        ? `https://${item.worker_name}.pages.dev`
-        : `https://${item.worker_name}.workers.dev`;
+      targetUrl = target.type === 'pages'
+        ? `https://${target.worker_name}.pages.dev`
+        : `https://${target.worker_name}.workers.dev`;
     } else if (!/^https?:\/\//i.test(targetUrl)) {
       targetUrl = `https://${targetUrl}`;
     }
@@ -324,7 +336,7 @@ router.post('/aggregate-homepage/fetch-metadata', async (req, res, next: NextFun
     // Find the Cloudflare account that OWNS this project (by account_id)
     // so we use that account's browser-render quota, not a random one.
     const { getAccountById, hasFeature } = await import('../models/account');
-    const projectAccount = getAccountById(item.account_id);
+    const projectAccount = getAccountById(target.account_id);
     if (!projectAccount || !projectAccount.account_id) {
       res.status(400).json({ error: { code: 'ACCOUNT_NOT_FOUND', message: '项目所属账号不存在或未配置 account_id' } });
       return;
@@ -337,7 +349,7 @@ router.post('/aggregate-homepage/fetch-metadata', async (req, res, next: NextFun
 
     let pageTitle = '';
     let pageDescription = '';
-    let screenshotPath = item.screenshot || '';
+    let screenshotPath = target.screenshot || '';
     let htmlFetchError = '';
     let screenshotError = '';
 
@@ -383,23 +395,27 @@ router.post('/aggregate-homepage/fetch-metadata', async (req, res, next: NextFun
       }
     }
 
-    // Update the item with the fetched metadata
-    item.title = pageTitle;
-    item.description = pageDescription;
-    if (screenshotPath && !screenshotError) item.screenshot = screenshotPath;
-    setAggregateConfig(cfg);
+    // 仅当项目已保存到配置时才回写 metadata；临时项目不修改配置。
+    if (item) {
+      item.title = pageTitle;
+      item.description = pageDescription;
+      if (screenshotPath && !screenshotError) item.screenshot = screenshotPath;
+      setAggregateConfig(cfg);
+    }
 
     // Return detailed status so the frontend can show what succeeded/failed
     // and offer per-item retry for title/description vs screenshot.
     res.json({
       success: true,
       item: {
-        account_id: item.account_id,
-        worker_name: item.worker_name,
-        title: item.title,
-        description: item.description,
-        screenshot: item.screenshot,
-        screenshot_url: item.screenshot ? resolveImageUrl(item.screenshot, cfg.image_upload.cdn_host) : '',
+        account_id: target.account_id,
+        worker_name: target.worker_name,
+        title: pageTitle,
+        description: pageDescription,
+        screenshot: screenshotPath && !screenshotError ? screenshotPath : (target.screenshot || ''),
+        screenshot_url: (screenshotPath && !screenshotError ? screenshotPath : (target.screenshot || ''))
+          ? resolveImageUrl(screenshotPath && !screenshotError ? screenshotPath : (target.screenshot || ''), cfg.image_upload.cdn_host)
+          : '',
       },
       status: {
         html_ok: !htmlFetchError,
